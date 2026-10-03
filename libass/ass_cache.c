@@ -32,6 +32,11 @@
 
 // Always enable native-endian mode, since we don't care about cross-platform consistency of the hash
 #define WYHASH_LITTLE_ENDIAN 1
+// wasm32 has no native 128-bit multiply; wyhash's __uint128_t path compiles to
+// the costly __multi3 helper. The 32-bit MUM path avoids it.
+#if defined(__wasm__) && !defined(WYHASH_32BIT_MUM)
+#define WYHASH_32BIT_MUM 1
+#endif
 #include "wyhash.h"
 
 // With wyhash any arbitrary 64 bit value will suffice

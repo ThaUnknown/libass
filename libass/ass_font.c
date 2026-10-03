@@ -473,6 +473,9 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
     atomic_store_explicit(&font->n_faces, n_faces + 1, memory_order_release);
     ret = n_faces;
 
+    // a new face can resolve previously failed lookups, invalidate the cache
+    memset(font->cmap_cache, 0, sizeof(font->cmap_cache));
+
 cleanup:
     ass_fontselect_unlock(fontsel);
 
@@ -500,6 +503,7 @@ size_t ass_font_construct(void *key, void *value, void *priv)
 
     font->ftlibrary = render_priv->ftlibrary;
     atomic_init(&font->n_faces, 0);
+    memset(font->cmap_cache, 0, sizeof(font->cmap_cache));
     font->desc.family = desc->family;
     font->desc.bold = desc->bold;
     font->desc.italic = desc->italic;
@@ -652,6 +656,7 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
     int index = 0;
     int i;
     FT_Face face = 0;
+    int ret = 1;
 
     *glyph_index = 0;
 
@@ -660,11 +665,21 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
         return 0;
     }
 
+    ass_font_lock(font);
+
     AtomicInt n_faces = atomic_load_explicit(&font->n_faces, memory_order_acquire);
 
     if (n_faces == 0) {
         *face_index = 0;
-        return 0;
+        ret = 0;
+        goto done;
+    }
+
+    ASS_FontCmapEntry *ce = &font->cmap_cache[ass_font_cmap_slot(symbol)];
+    if (ce->symbol == symbol) {
+        *face_index = ce->face_index;
+        *glyph_index = ce->glyph_index;
+        goto done;
     }
 
     for (i = 0; i < n_faces && index == 0; ++i) {
@@ -690,6 +705,7 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
                 index = FT_Get_Char_Index(face, index);
             if (index == 0 && face->num_charmaps > 0) {
                 int i;
+                FT_CharMap charmap = face->charmap;
                 ass_msg(font->library, MSGL_WARN,
                     "Glyph 0x%X not found, broken font? Trying all charmaps", symbol);
                 for (i = 0; i < face->num_charmaps; i++) {
@@ -699,6 +715,13 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
                         index = FT_Get_Char_Index(face, index);
                     if (index) break;
                 }
+                // Restore the original charmap if the search failed, otherwise
+                // the last tried charmap would silently change how all
+                // subsequent lookups on this face resolve.
+                if (index == 0 && charmap)
+                    FT_Set_Charmap(face, charmap);
+                else // The active charmap changed, clear the cache.
+                    memset(font->cmap_cache, 0, sizeof(font->cmap_cache));
             }
             if (index == 0) {
                 ass_msg(font->library, MSGL_ERR,
@@ -713,7 +736,15 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
     *face_index  = FFMAX(*face_index, 0);
     *glyph_index = index;
 
-    return 1;
+    // recompute after add_face/charmap reset may have cleared the cache
+    ce = &font->cmap_cache[ass_font_cmap_slot(symbol)];
+    ce->symbol = symbol;
+    ce->face_index = *face_index;
+    ce->glyph_index = index;
+
+done:
+    ass_font_unlock(font);
+    return ret;
 }
 
 /**

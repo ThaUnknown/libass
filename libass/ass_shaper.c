@@ -78,9 +78,18 @@ struct ass_shaper {
     char whole_text_layout;
 };
 
+// Direct-mapped memo for metrics lookups within one shape run. The sub-font
+// fixes (font, face, size), so entries are keyed by glyph index alone and
+// the full metrics cache lookup is skipped for repeated glyphs.
+#define METRICS_MEMO_SIZE 128
+
 struct ass_shaper_metrics_data {
     ASS_Shaper *shaper;
     FaceSizeMetricsHashKey hash_key;
+    struct {
+        FT_Glyph_Metrics *metrics;
+        hb_codepoint_t glyph;
+    } memo[METRICS_MEMO_SIZE];
 };
 
 /**
@@ -221,6 +230,10 @@ get_cached_metrics(struct ass_shaper_metrics_data *metrics,
     if (metrics->hash_key.font->desc.vertical && unicode >= VERTICAL_LOWER_BOUND)
         rotate = true;
 
+    size_t slot = glyph % METRICS_MEMO_SIZE;
+    if (metrics->memo[slot].glyph == glyph)
+        return metrics->memo[slot].metrics;
+
     GlyphMetricsHashKey key = {
         .font = metrics->hash_key.font,
         .face_index = metrics->hash_key.face_index,
@@ -230,7 +243,10 @@ get_cached_metrics(struct ass_shaper_metrics_data *metrics,
     FT_Glyph_Metrics *val = ass_cache_get(metrics->shaper->metrics_cache, metrics->shaper->cache_client, &key,
                                           rotate ? metrics : NULL);
     if (!val || val->width < 0)
-        return NULL;
+        val = NULL;
+
+    metrics->memo[slot].metrics = val;
+    metrics->memo[slot].glyph = glyph;
 
     return val;
 }
@@ -532,6 +548,8 @@ static hb_font_t *get_hb_font(ASS_Shaper *shaper, GlyphInfo *info)
     }
     metrics->shaper = shaper;
     metrics->hash_key = key;
+    for (size_t i = 0; i < METRICS_MEMO_SIZE; i++)
+        metrics->memo[i].glyph = HB_CODEPOINT_INVALID;
 
     hb_font_set_funcs(hb_font, shaper->font_funcs, metrics, free);
 

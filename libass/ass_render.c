@@ -270,6 +270,7 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (render_priv->ftlibrary)
         FT_Done_FreeType(render_priv->ftlibrary);
     free(render_priv->eimg);
+    free(render_priv->collision_scratch);
 
     free(render_priv->settings.default_font);
     free(render_priv->settings.default_family);
@@ -3362,12 +3363,26 @@ static int fit_rect(Rect *s, Rect *fixed, int *cnt, int dir)
 static void
 fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
 {
-    Rect *used = ass_realloc_array(NULL, cnt, sizeof(*used));
+    int participants = 0;
+    for (int i = 0; i < cnt; i++) {
+        if (imgs[i].detect_collisions && imgs[i].height && imgs[i].width)
+            participants++;
+    }
+    if (!participants)
+        return;
+
+    if (participants > render_priv->collision_scratch_size) {
+        Rect *scratch = ass_realloc_array(render_priv->collision_scratch,
+                                          participants, sizeof(*scratch));
+        if (!scratch)
+            return;
+        render_priv->collision_scratch = scratch;
+        render_priv->collision_scratch_size = participants;
+    }
+
+    Rect *used = render_priv->collision_scratch;
     int cnt_used = 0;
     int i, j;
-
-    if (!used)
-        return;
 
     // fill used[] with fixed events
     for (i = 0; i < cnt; ++i) {
@@ -3434,8 +3449,6 @@ fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
         }
 
     }
-
-    free(used);
 }
 
 /**

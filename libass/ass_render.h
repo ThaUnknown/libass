@@ -305,6 +305,13 @@ struct render_context {
 typedef struct render_context RenderContext;
 
 typedef struct {
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+} Rect;
+
+typedef struct {
     Cache *font_cache;
     Cache *outline_cache;
     Cache *bitmap_cache;
@@ -330,6 +337,8 @@ struct ass_renderer {
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size
+    Rect *collision_scratch;    // temporary buffer for collision placement
+    int collision_scratch_size; // allocated buffer size
 
     // frame-global data
     int width, height;          // screen dimensions (the whole frame from ass_set_frame_size)
@@ -368,13 +377,6 @@ typedef struct render_priv {
     int top, height, left, width;
     int render_id;
 } RenderPriv;
-
-typedef struct {
-    int x0;
-    int y0;
-    int x1;
-    int y1;
-} Rect;
 
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
 void ass_frame_ref(ASS_Image *img);

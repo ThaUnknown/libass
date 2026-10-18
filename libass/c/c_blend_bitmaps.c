@@ -88,3 +88,24 @@ void ass_mul_bitmaps_c(uint8_t *restrict dst, ptrdiff_t dst_stride,
         src2 += src2_stride;
     }
 }
+
+/**
+ * \brief Subtract glyph bitmap from outline bitmap
+ * Pixels not covered by more outline than glyph get cleared.
+ */
+void ass_fix_outline_c(uint8_t *restrict dst, ptrdiff_t dst_stride,
+                       const uint8_t *restrict src, ptrdiff_t src_stride,
+                       size_t width, size_t height)
+{
+    ASSUME(!(dst_stride % ALIGNMENT));
+    ASSUME(!(src_stride % ALIGNMENT));
+    ASSUME(width > 0 && height > 0);
+
+    uint8_t *end = dst + dst_stride * height;
+    while (dst < end) {
+        for (size_t x = 0; x < width; x++)
+            dst[x] = dst[x] > src[x] ? dst[x] - src[x] / 2 : 0;
+        dst += dst_stride;
+        src += src_stride;
+    }
+}

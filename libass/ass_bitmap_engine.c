@@ -831,6 +831,9 @@ void ass_be_blur_wasm(uint8_t *restrict buf, ptrdiff_t stride,
 #endif
 
 
+BitmapBlendFunc ass_fix_outline_c;
+BitmapShiftFunc ass_shift_horz_c, ass_shift_vert_c;
+
 #define RASTERIZER_PROTOTYPES(tile_size, suffix) \
     FillSolidTileFunc     ass_fill_solid_tile     ## tile_size ## _ ## suffix; \
     FillHalfplaneTileFunc ass_fill_halfplane_tile ## tile_size ## _ ## suffix; \
@@ -972,6 +975,9 @@ BitmapEngine ass_bitmap_engine_init(unsigned mask)
     BLUR_PROTOTYPES(32, c)
     BitmapEngine engine = {0};
     engine.tile_order = mask & ASS_FLAG_LARGE_TILES ? 5 : 4;
+    engine.fix_outline = ass_fix_outline_c;
+    engine.shift_horz  = ass_shift_horz_c;
+    engine.shift_vert  = ass_shift_vert_c;
 
 #if CONFIG_ASM
     unsigned flags = ass_get_cpu_flags(mask);

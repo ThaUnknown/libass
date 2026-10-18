@@ -48,6 +48,10 @@ typedef void BitmapMulFunc(uint8_t *restrict dst, ptrdiff_t dst_stride,
                            const uint8_t *restrict src2, ptrdiff_t src2_stride,
                            size_t width, size_t height);
 
+// shift by shift/64 of a pixel to the right/bottom
+typedef void BitmapShiftFunc(uint8_t *buf, ptrdiff_t stride,
+                             size_t width, size_t height, int shift);
+
 typedef void BeBlurFunc(uint8_t *restrict buf, ptrdiff_t stride,
                         size_t width, size_t height, uint16_t *restrict tmp);
 
@@ -75,6 +79,10 @@ typedef struct {
     // blend functions
     BitmapBlendFunc *add_bitmaps, *imul_bitmaps;
     BitmapMulFunc *mul_bitmaps;
+
+    // outline and shadow functions
+    BitmapBlendFunc *fix_outline;
+    BitmapShiftFunc *shift_horz, *shift_vert;
 
     // be blur function
     BeBlurFunc *be_blur;

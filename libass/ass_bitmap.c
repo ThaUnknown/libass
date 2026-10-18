@@ -92,11 +92,11 @@ void ass_synth_blur(const BitmapEngine *engine, Bitmap *bm,
     if (--be) {
         be_blur_pre(buf, stride, w, h);
         do {
-            engine->be_blur(buf, stride, w, h, tmp);
+            engine->be_blur( buf, stride, w, h, tmp);
         } while (--be);
         be_blur_post(buf, stride, w, h);
     }
-    engine->be_blur(buf, stride, w, h, tmp);
+    engine->be_blur( buf, stride, w, h, tmp);
     ass_aligned_free(tmp);
 }
 
@@ -202,7 +202,7 @@ bool ass_outline_to_bitmap(RenderContext *state, Bitmap *bm,
  * The glyph bitmap is subtracted from outline bitmap. This way looks much
  * better in some cases.
  */
-void ass_fix_outline(Bitmap *bm_g, Bitmap *bm_o)
+void ass_fix_outline(const BitmapEngine *engine, Bitmap *bm_g, Bitmap *bm_o)
 {
     if (!bm_g->buffer || !bm_o->buffer)
         return;
@@ -211,50 +211,36 @@ void ass_fix_outline(Bitmap *bm_g, Bitmap *bm_o)
     int32_t t = FFMAX(bm_o->top,  bm_g->top);
     int32_t r = FFMIN(bm_o->left + bm_o->stride, bm_g->left + bm_g->stride);
     int32_t b = FFMIN(bm_o->top  + bm_o->h,      bm_g->top  + bm_g->h);
+    if (l >= r || t >= b)
+        return;
 
-    uint8_t *g = bm_g->buffer + (t - bm_g->top) * bm_g->stride + (l - bm_g->left);
+    const uint8_t *g = bm_g->buffer + (t - bm_g->top) * bm_g->stride + (l - bm_g->left);
     uint8_t *o = bm_o->buffer + (t - bm_o->top) * bm_o->stride + (l - bm_o->left);
 
-    for (int32_t y = 0; y < b - t; y++) {
-        for (int32_t x = 0; x < r - l; x++)
-            o[x] = (o[x] > g[x]) ? o[x] - (g[x] / 2) : 0;
-        g += bm_g->stride;
-        o += bm_o->stride;
-    }
+    // bm_g and bm_o never share a buffer
+    engine->fix_outline( o, bm_o->stride, g, bm_g->stride,
+                r - l, b - t);
 }
 
 /**
  * \brief Shift a bitmap by the fraction of a pixel in x and y direction
  * expressed in 26.6 fixed point
  */
-void ass_shift_bitmap(Bitmap *bm, int shift_x, int shift_y)
+void ass_shift_bitmap(const BitmapEngine *engine, Bitmap *bm,
+                      int shift_x, int shift_y)
 {
     assert((shift_x & ~63) == 0 && (shift_y & ~63) == 0);
 
-    if (!bm->buffer)
+    if (!bm->buffer || bm->w <= 0 || bm->h <= 0)
         return;
 
-    int32_t w = bm->w, h = bm->h;
-    ptrdiff_t s = bm->stride;
-    uint8_t *buf = bm->buffer;
-
     // Shift in x direction
-    if (shift_x)
-        for (int32_t y = 0; y < h; y++) {
-            for (int32_t x = w - 1; x > 0; x--) {
-                uint8_t b = buf[x + y * s - 1] * shift_x >> 6;
-                buf[x + y * s - 1] -= b;
-                buf[x + y * s] += b;
-            }
-        }
+    if (shift_x && bm->w > 1)
+        engine->shift_horz( bm->buffer, bm->stride,
+                    bm->w, bm->h, shift_x);
 
     // Shift in y direction
-    if (shift_y)
-        for (int32_t x = 0; x < w; x++) {
-            for (int32_t y = h - 1; y > 0; y--) {
-                uint8_t b = buf[x + y * s - s] * shift_y >> 6;
-                buf[x + y * s - s] -= b;
-                buf[x + y * s] += b;
-            }
-        }
+    if (shift_y && bm->h > 1)
+        engine->shift_vert( bm->buffer, bm->stride,
+                    bm->w, bm->h, shift_y);
 }

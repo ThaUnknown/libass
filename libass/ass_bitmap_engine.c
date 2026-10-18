@@ -26,7 +26,6 @@
 
 #if defined(__wasm_simd128__)
 #include <wasm_simd128.h>
-#include <string.h>
 #include "ass_rasterizer.h"   // struct segment, SEGFLAG_* for the rasterizer port
 #ifndef ALIGNMENT
 #define ALIGNMENT 16
@@ -303,19 +302,37 @@ void ass_blur8_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
 { blur_vert_wasm(dst, src, w, h, param, 8); }
 #undef SW
 
-// Gaussian blur, horizontal class (stripe-8 / align-16): shifted-load taps with
-// even/odd deinterleave (shrink) and interleaved output (expand).
+// Gaussian blur, horizontal class (stripe-8 / align-16): neighbouring stripes
+// are loaded straight into registers (zero outside the bitmap) and the shifted
+// taps are built with two-register shuffles, with even/odd deinterleave
+// (shrink) and interleaved output (expand).
 #define HSW 8
 
 static int16_t hzero_line[HSW];
 
-static inline const int16_t *hget_line(const int16_t *ptr, size_t offs, size_t size)
+static inline v128_t hload_line(const int16_t *ptr, size_t offs, size_t size)
 {
-    return offs < size ? ptr + offs : hzero_line;
+    return wasm_v128_load(offs < size ? ptr + offs : hzero_line);
 }
-static inline void hcopy_line(int16_t *buf, const int16_t *ptr, size_t offs, size_t size)
+
+// Lanes 8-k..15-k of the concatenation lo:hi (0 <= k <= 8): with lo and hi the
+// stripe lines at ptr[-8..-1] and ptr[0..7] of the C version's line buffer,
+// this is ptr[-k..7-k]. k must be a constant; forced inlining lets the switch
+// fold to a single shuffle at every optimization level (incl. -Os/-Oz).
+static inline __attribute__((always_inline))
+v128_t hwindow(v128_t lo, v128_t hi, int k)
 {
-    memcpy(buf, hget_line(ptr, offs, size), HSW * sizeof(buf[0]));
+    switch (k) {
+    case 0:  return hi;
+    case 1:  return wasm_i16x8_shuffle(lo, hi, 7, 8, 9, 10, 11, 12, 13, 14);
+    case 2:  return wasm_i16x8_shuffle(lo, hi, 6, 7, 8, 9, 10, 11, 12, 13);
+    case 3:  return wasm_i16x8_shuffle(lo, hi, 5, 6, 7, 8, 9, 10, 11, 12);
+    case 4:  return wasm_i16x8_shuffle(lo, hi, 4, 5, 6, 7, 8, 9, 10, 11);
+    case 5:  return wasm_i16x8_shuffle(lo, hi, 3, 4, 5, 6, 7, 8, 9, 10);
+    case 6:  return wasm_i16x8_shuffle(lo, hi, 2, 3, 4, 5, 6, 7, 8, 9);
+    case 7:  return wasm_i16x8_shuffle(lo, hi, 1, 2, 3, 4, 5, 6, 7, 8);
+    default: return lo;
+    }
 }
 
 // shrink_func on an i32x4 lane group (intermediates exceed int16 range)
@@ -339,19 +356,17 @@ void ass_shrink_horz16_wasm(int16_t *restrict dst, const int16_t *restrict src,
     size_t step = HSW * src_height;
 
     size_t offs = 0;
-    _Alignas(16) int16_t buf[3 * HSW];
-    int16_t *ptr = buf + HSW;
     for (size_t x = 0; x < dst_width; x += HSW) {
         for (size_t y = 0; y < src_height; y++) {
-            hcopy_line(ptr - 1 * HSW, src, offs - 1 * step, size);
-            hcopy_line(ptr + 0 * HSW, src, offs + 0 * step, size);
-            hcopy_line(ptr + 1 * HSW, src, offs + 1 * step, size);
+            v128_t prev = hload_line(src, offs - 1 * step, size);
+            v128_t cur  = hload_line(src, offs + 0 * step, size);
+            v128_t next = hload_line(src, offs + 1 * step, size);
 
-            // shrink_func taps ptr[2k-4..2k+1]: load ptr[-4..19], deinterleave
+            // shrink_func taps ptr[2k-4..2k+1]: take ptr[-4..15], deinterleave
             // into even/odd lanes, then shift to gather the six taps per stripe.
-            v128_t va = wasm_v128_load(ptr - 4);
-            v128_t vb = wasm_v128_load(ptr + 4);
-            v128_t vc = wasm_v128_load(ptr + 8);
+            v128_t va = hwindow(prev, cur, 4);
+            v128_t vb = hwindow(cur, next, 4);
+            v128_t vc = next;
             v128_t even_lo = wasm_i16x8_shuffle(va, vb, 0, 2, 4, 6, 8, 10, 12, 14);
             v128_t odd_lo  = wasm_i16x8_shuffle(va, vb, 1, 3, 5, 7, 9, 11, 13, 15);
             v128_t p1p = even_lo;
@@ -376,15 +391,13 @@ void ass_shrink_horz16_wasm(int16_t *restrict dst, const int16_t *restrict src,
     }
 }
 
-static inline void hexpand_block(int16_t *out0, int16_t *out1, const int16_t *ptr)
+static inline void hexpand_block(int16_t *out0, int16_t *out1, v128_t prev, v128_t cur)
 {
     const v128_t one = wasm_i16x8_splat(1);
     // p1[k]=ptr[k-2], z0[k]=ptr[k-1], n1[k]=ptr[k]
-    v128_t va = wasm_v128_load(ptr - 2);
-    v128_t vb = wasm_v128_load(ptr);
-    v128_t p1 = va;
-    v128_t z0 = wasm_i16x8_shuffle(va, vb, 1, 2, 3, 4, 5, 6, 7, 14);
-    v128_t n1 = vb;
+    v128_t p1 = hwindow(prev, cur, 2);
+    v128_t z0 = hwindow(prev, cur, 1);
+    v128_t n1 = cur;
 
     // expand_func, all u16 arithmetic (values stay < 0x8000)
     v128_t r  = wasm_u16x8_shr(wasm_i16x8_add(wasm_u16x8_shr(wasm_i16x8_add(p1, n1), 1), z0), 1);
@@ -406,15 +419,13 @@ void ass_expand_horz16_wasm(int16_t *restrict dst, const int16_t *restrict src,
     size_t step = HSW * src_height;
 
     size_t offs = 0;
-    _Alignas(16) int16_t buf[2 * HSW];
-    int16_t *ptr = buf + HSW;
     for (size_t x = HSW; x < dst_width; x += 2 * HSW) {
         for (size_t y = 0; y < src_height; y++) {
-            hcopy_line(ptr - 1 * HSW, src, offs - 1 * step, size);
-            hcopy_line(ptr - 0 * HSW, src, offs - 0 * step, size);
+            v128_t prev = hload_line(src, offs - 1 * step, size);
+            v128_t cur  = hload_line(src, offs - 0 * step, size);
             // k=0..3 -> dst[0..7]; k=4..7 -> next[2k..2k+1] with next=dst+step-8,
             // i.e. dst[step .. step+7]
-            hexpand_block(dst, dst + step, ptr);
+            hexpand_block(dst, dst + step, prev, cur);
             dst  += HSW;
             offs += HSW;
         }
@@ -424,15 +435,13 @@ void ass_expand_horz16_wasm(int16_t *restrict dst, const int16_t *restrict src,
         return;
 
     for (size_t y = 0; y < src_height; y++) {
-        hcopy_line(ptr - 1 * HSW, src, offs - 1 * step, size);
-        hcopy_line(ptr - 0 * HSW, src, offs - 0 * step, size);
+        v128_t prev = hload_line(src, offs - 1 * step, size);
+        v128_t cur  = hload_line(src, offs - 0 * step, size);
         // only k=0..3 -> dst[0..7]
         const v128_t one = wasm_i16x8_splat(1);
-        v128_t va = wasm_v128_load(ptr - 2);
-        v128_t vb = wasm_v128_load(ptr);
-        v128_t p1 = va;
-        v128_t z0 = wasm_i16x8_shuffle(va, vb, 1, 2, 3, 4, 5, 6, 7, 14);
-        v128_t n1 = vb;
+        v128_t p1 = hwindow(prev, cur, 2);
+        v128_t z0 = hwindow(prev, cur, 1);
+        v128_t n1 = cur;
         v128_t r  = wasm_u16x8_shr(wasm_i16x8_add(wasm_u16x8_shr(wasm_i16x8_add(p1, n1), 1), z0), 1);
         v128_t rp = wasm_u16x8_shr(wasm_i16x8_add(wasm_i16x8_add(wasm_u16x8_shr(wasm_i16x8_add(r, p1), 1), z0), one), 1);
         v128_t rn = wasm_u16x8_shr(wasm_i16x8_add(wasm_i16x8_add(wasm_u16x8_shr(wasm_i16x8_add(r, n1), 1), z0), one), 1);
@@ -443,39 +452,49 @@ void ass_expand_horz16_wasm(int16_t *restrict dst, const int16_t *restrict src,
     }
 }
 
-static inline void blur_horz_wasm(int16_t *restrict dst, const int16_t *restrict src,
-                                  size_t src_width, size_t src_height,
-                                  const int16_t *restrict param, const int n)
+// Taps of blur_horz_wasm(): ptr[-k..7-k] (0 <= k <= 2 * HSW) from the lines
+// a, b, c holding ptr[-16..-9], [-8..-1], [0..7].
+#define HTAP(k) ((k) <= HSW ? hwindow(b, c, (k)) : hwindow(a, b, (k) - HSW))
+
+// Tap pair n +- i with coefficient param[i - 1]. Spelled out for each i rather
+// than looped over, so that with n constant (blur_horz_wasm() is always
+// inlined) every HTAP() is a fixed shuffle without relying on loop unrolling.
+// The wrapping i16 sub matches the scalar (int16_t)(ptr[..] - ptr[k-n]).
+#define HTAP_PAIR(i)                                                         \
+    if ((i) <= n) {                                                          \
+        v128_t d1 = wasm_i16x8_sub(HTAP(n + (i)), center);                   \
+        v128_t d2 = wasm_i16x8_sub(HTAP(n - (i)), center);                   \
+        v128_t pv = wasm_i16x8_splat(param[(i) - 1]);                        \
+        acc_lo = wasm_i32x4_add(acc_lo, wasm_i32x4_add(                      \
+                     wasm_i32x4_extmul_low_i16x8(d1, pv),                    \
+                     wasm_i32x4_extmul_low_i16x8(d2, pv)));                  \
+        acc_hi = wasm_i32x4_add(acc_hi, wasm_i32x4_add(                      \
+                     wasm_i32x4_extmul_high_i16x8(d1, pv),                   \
+                     wasm_i32x4_extmul_high_i16x8(d2, pv)));                 \
+    }
+
+static inline __attribute__((always_inline))
+void blur_horz_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                    size_t src_width, size_t src_height,
+                    const int16_t *restrict param, const int n)
 {
     size_t dst_width = src_width + 2 * n;
     size_t size = ((src_width + 7) & ~(size_t)7) * src_height;
     size_t step = HSW * src_height;
 
     size_t offs = 0;
-    _Alignas(16) int16_t buf[3 * HSW];
-    int16_t *ptr = buf + 2 * HSW;
     for (size_t x = 0; x < dst_width; x += HSW) {
         for (size_t y = 0; y < src_height; y++) {
-            for (int i = -((2 * n + HSW - 1) / HSW); i <= 0; i++)
-                hcopy_line(ptr + i * HSW, src, offs + i * step, size);
+            // taps span ptr[-2n..7]
+            v128_t a = 2 * n > HSW ? hload_line(src, offs - 2 * step, size) : wasm_i16x8_splat(0);
+            v128_t b = hload_line(src, offs - 1 * step, size);
+            v128_t c = hload_line(src, offs - 0 * step, size);
 
             v128_t acc_lo = wasm_i32x4_splat(0x8000);
             v128_t acc_hi = acc_lo;
-            v128_t center = wasm_v128_load(ptr - n);
-            for (int i = n; i > 0; i--) {
-                v128_t w1 = wasm_v128_load(ptr - n - i);
-                v128_t w2 = wasm_v128_load(ptr - n + i);
-                v128_t pv = wasm_i16x8_splat(param[i - 1]);
-                // wrapping i16 sub matches the scalar (int16_t)(ptr[..] - ptr[k-n])
-                v128_t d1 = wasm_i16x8_sub(w1, center);
-                v128_t d2 = wasm_i16x8_sub(w2, center);
-                acc_lo = wasm_i32x4_add(acc_lo, wasm_i32x4_add(
-                             wasm_i32x4_extmul_low_i16x8(d1, pv),
-                             wasm_i32x4_extmul_low_i16x8(d2, pv)));
-                acc_hi = wasm_i32x4_add(acc_hi, wasm_i32x4_add(
-                             wasm_i32x4_extmul_high_i16x8(d1, pv),
-                             wasm_i32x4_extmul_high_i16x8(d2, pv)));
-            }
+            v128_t center = HTAP(n);
+            HTAP_PAIR(8) HTAP_PAIR(7) HTAP_PAIR(6) HTAP_PAIR(5)
+            HTAP_PAIR(4) HTAP_PAIR(3) HTAP_PAIR(2) HTAP_PAIR(1)
             // dst[k] = ptr[k-n] + (acc[k] >> 16)
             v128_t lo = wasm_i32x4_add(wasm_i32x4_extend_low_i16x8(center), wasm_i32x4_shr(acc_lo, 16));
             v128_t hi = wasm_i32x4_add(wasm_i32x4_extend_high_i16x8(center), wasm_i32x4_shr(acc_hi, 16));
@@ -486,6 +505,8 @@ static inline void blur_horz_wasm(int16_t *restrict dst, const int16_t *restrict
         }
     }
 }
+#undef HTAP_PAIR
+#undef HTAP
 
 void ass_blur4_horz16_wasm(int16_t *restrict dst, const int16_t *restrict src,
                            size_t w, size_t h, const int16_t *restrict param)

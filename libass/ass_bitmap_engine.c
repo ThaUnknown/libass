@@ -249,6 +249,18 @@ void ass_expand_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
     }
 }
 
+// Interleave the two tap vectors: [a0, b0, a1, b1, ...] so the lanes of one
+// i32x4.dot_i16x8 compute a[k] * p + b[k] * p.
+static inline v128_t interleave_lo_i16(v128_t a, v128_t b)
+{
+    return wasm_i16x8_shuffle(a, b, 0, 8, 1, 9, 2, 10, 3, 11);
+}
+
+static inline v128_t interleave_hi_i16(v128_t a, v128_t b)
+{
+    return wasm_i16x8_shuffle(a, b, 4, 12, 5, 13, 6, 14, 7, 15);
+}
+
 static inline void blur_vert_wasm(int16_t *restrict dst, const int16_t *restrict src,
                                   size_t src_width, size_t src_height,
                                   const int16_t *restrict param, const int n)
@@ -267,12 +279,10 @@ static inline void blur_vert_wasm(int16_t *restrict dst, const int16_t *restrict
                 v128_t pv = wasm_i16x8_splat(param[i - 1]);
                 v128_t d1 = wasm_i16x8_sub(l1, center);
                 v128_t d2 = wasm_i16x8_sub(l2, center);
-                acc_lo = wasm_i32x4_add(acc_lo, wasm_i32x4_add(
-                             wasm_i32x4_extmul_low_i16x8(d1, pv),
-                             wasm_i32x4_extmul_low_i16x8(d2, pv)));
-                acc_hi = wasm_i32x4_add(acc_hi, wasm_i32x4_add(
-                             wasm_i32x4_extmul_high_i16x8(d1, pv),
-                             wasm_i32x4_extmul_high_i16x8(d2, pv)));
+                acc_lo = wasm_i32x4_add(acc_lo, wasm_i32x4_dot_i16x8(
+                             interleave_lo_i16(d1, d2), pv));
+                acc_hi = wasm_i32x4_add(acc_hi, wasm_i32x4_dot_i16x8(
+                             interleave_hi_i16(d1, d2), pv));
             }
             // dst[k] = center[k] + (acc[k] >> 16)
             v128_t lo = wasm_i32x4_add(wasm_i32x4_extend_low_i16x8(center), wasm_i32x4_shr(acc_lo, 16));
@@ -465,12 +475,10 @@ void ass_expand_horz16_wasm(int16_t *restrict dst, const int16_t *restrict src,
         v128_t d1 = wasm_i16x8_sub(HTAP(n + (i)), center);                   \
         v128_t d2 = wasm_i16x8_sub(HTAP(n - (i)), center);                   \
         v128_t pv = wasm_i16x8_splat(param[(i) - 1]);                        \
-        acc_lo = wasm_i32x4_add(acc_lo, wasm_i32x4_add(                      \
-                     wasm_i32x4_extmul_low_i16x8(d1, pv),                    \
-                     wasm_i32x4_extmul_low_i16x8(d2, pv)));                  \
-        acc_hi = wasm_i32x4_add(acc_hi, wasm_i32x4_add(                      \
-                     wasm_i32x4_extmul_high_i16x8(d1, pv),                   \
-                     wasm_i32x4_extmul_high_i16x8(d2, pv)));                 \
+        acc_lo = wasm_i32x4_add(acc_lo, wasm_i32x4_dot_i16x8(                \
+                     interleave_lo_i16(d1, d2), pv));                        \
+        acc_hi = wasm_i32x4_add(acc_hi, wasm_i32x4_dot_i16x8(                \
+                     interleave_hi_i16(d1, d2), pv));                        \
     }
 
 static inline __attribute__((always_inline))

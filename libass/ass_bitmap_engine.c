@@ -143,7 +143,21 @@ void ass_stripe_unpack16_wasm(int16_t *restrict dst, const uint8_t *restrict src
     const v128_t one = wasm_i16x8_splat(1);
     for (size_t y = 0; y < height; y++) {
         int16_t *ptr = dst;
-        for (size_t x = 0; x < width; x += SW) {
+        size_t x = 0;
+        for (; x + 16 <= width; x += 16) {
+            // Two stripes per iteration: one 16-byte load, two stripe stores.
+            v128_t bytes = wasm_v128_load(src + x);
+            v128_t s0 = wasm_u16x8_extend_low_u8x16(bytes);
+            v128_t s1 = wasm_u16x8_extend_high_u8x16(bytes);
+            v128_t v0 = wasm_v128_or(wasm_i16x8_shl(s0, 7), wasm_u16x8_shr(s0, 1));
+            v128_t v1 = wasm_v128_or(wasm_i16x8_shl(s1, 7), wasm_u16x8_shr(s1, 1));
+            v0 = wasm_u16x8_shr(wasm_i16x8_add(v0, one), 1);
+            v1 = wasm_u16x8_shr(wasm_i16x8_add(v1, one), 1);
+            wasm_v128_store(ptr, v0);
+            wasm_v128_store(ptr + SW * height, v1);
+            ptr += 2 * SW * height;
+        }
+        for (; x < width; x += SW) {
             // ptr[k] = (uint16_t)(((src<<7)|(src>>1)) + 1) >> 1
             v128_t s = wasm_u16x8_extend_low_u8x16(wasm_v128_load64_zero(src + x));
             v128_t v = wasm_v128_or(wasm_i16x8_shl(s, 7), wasm_u16x8_shr(s, 1));
@@ -161,7 +175,33 @@ void ass_stripe_pack16_wasm(uint8_t *restrict dst, ptrdiff_t dst_stride,
 {
     const v128_t dither_even = wasm_i16x8_make(8, 40, 8, 40, 8, 40, 8, 40);
     const v128_t dither_odd  = wasm_i16x8_make(56, 24, 56, 24, 56, 24, 56, 24);
-    for (size_t x = 0; x < width; x += SW) {
+    size_t x = 0;
+    for (; x + 16 <= width; x += 16) {
+        uint8_t *ptr = dst;
+        const int16_t *src2 = src + SW * height;
+        for (size_t y = 0; y < height; y++) {
+            // Two stripes per iteration: one 16-byte store per row.
+            v128_t s0 = wasm_v128_load(src);
+            v128_t s1 = wasm_v128_load(src2);
+            v128_t d = (y & 1) ? dither_odd : dither_even;
+            v128_t v0 = wasm_u16x8_shr(wasm_i16x8_add(
+                            wasm_i16x8_sub(s0, wasm_i16x8_shr(s0, 8)), d), 6);
+            v128_t v1 = wasm_u16x8_shr(wasm_i16x8_add(
+                            wasm_i16x8_sub(s1, wasm_i16x8_shr(s1, 8)), d), 6);
+            v128_t n0 = wasm_u8x16_narrow_i16x8(v0, v0);
+            v128_t n1 = wasm_u8x16_narrow_i16x8(v1, v1);
+            v128_t out = wasm_i8x16_shuffle(n0, n1,
+                                            0, 1, 2, 3, 4, 5, 6, 7,
+                                            16, 17, 18, 19, 20, 21, 22, 23);
+            wasm_v128_store(ptr, out);
+            ptr += dst_stride;
+            src += SW;
+            src2 += SW;
+        }
+        dst += 2 * SW;
+        src = src2;
+    }
+    for (; x < width; x += SW) {
         uint8_t *ptr = dst;
         for (size_t y = 0; y < height; y++) {
             // ptr[k] = (uint16_t)(src - (src>>8) + dither) >> 6

@@ -828,6 +828,106 @@ void ass_be_blur_wasm(uint8_t *restrict buf, ptrdiff_t stride,
             buf[x] = (uint8_t)((uint16_t)(col_sum_buf[x] + col_pix_buf[x]) >> 4);
     }
 }
+
+/*
+ * Outline and shadow kernels. fix_outline is 16 bytes/iter with a scalar
+ * tail. The shift kernels work on whole aligned 16-byte blocks and mask out
+ * the changes past width, like their x86 and NEON counterparts.
+ */
+
+void ass_fix_outline_wasm(uint8_t *restrict dst, ptrdiff_t dst_stride,
+                          const uint8_t *restrict src, ptrdiff_t src_stride,
+                          size_t width, size_t height)
+{
+    size_t w16 = width & ~(size_t) 15;
+    uint8_t *end = dst + dst_stride * height;
+    while (dst < end) {
+        size_t x = 0;
+        for (; x < w16; x += 16) {
+            // dst > src ? dst - src / 2 : 0
+            v128_t o = wasm_v128_load(dst + x);
+            v128_t g = wasm_v128_load(src + x);
+            v128_t res = wasm_i8x16_sub(o, wasm_u8x16_shr(g, 1));
+            wasm_v128_store(dst + x, wasm_v128_and(res, wasm_u8x16_gt(o, g)));
+        }
+        for (; x < width; x++)
+            dst[x] = dst[x] > src[x] ? dst[x] - src[x] / 2 : 0;
+        dst += dst_stride;
+        src += src_stride;
+    }
+}
+
+// src * shift >> 6 for every byte, with shift in every byte of mul
+static inline v128_t shift_part_wasm(v128_t src, v128_t mul)
+{
+    v128_t lo = wasm_u16x8_shr(wasm_u16x8_extmul_low_u8x16(src, mul), 6);
+    v128_t hi = wasm_u16x8_shr(wasm_u16x8_extmul_high_u8x16(src, mul), 6);
+    return wasm_u8x16_narrow_i16x8(lo, hi);
+}
+
+// first n bytes set, n in [0, 16]
+static inline v128_t edge_mask_wasm(size_t n)
+{
+    const v128_t index = wasm_i8x16_make(0, 1, 2, 3, 4, 5, 6, 7,
+                                         8, 9, 10, 11, 12, 13, 14, 15);
+    return wasm_u8x16_lt(index, wasm_i8x16_splat(n));
+}
+
+void ass_shift_horz_wasm(uint8_t *buf, ptrdiff_t stride,
+                         size_t width, size_t height, int shift)
+{
+    ASSUME(!((uintptr_t) buf % ALIGNMENT) && !(stride % ALIGNMENT));
+    ASSUME(width > 0 && height > 0);
+
+    const v128_t mul = wasm_i8x16_splat(shift);
+    // the last pixel of a row moves nothing to the right
+    size_t last = (width - 1) & ~(size_t) 15;
+    const v128_t edge = edge_mask_wasm((width - 1) % 16);
+    uint8_t *end = buf + stride * height;
+    for (; buf < end; buf += stride) {
+        v128_t prev = wasm_i8x16_splat(0);
+        for (size_t x = 0; x <= last; x += 16) {
+            v128_t src = wasm_v128_load(buf + x);
+            v128_t part = shift_part_wasm(src, mul);
+            if (x == last)
+                part = wasm_v128_and(part, edge);
+            v128_t gain = wasm_i8x16_shuffle(prev, part,
+                                             15, 16, 17, 18, 19, 20, 21, 22,
+                                             23, 24, 25, 26, 27, 28, 29, 30);
+            wasm_v128_store(buf + x,
+                            wasm_i8x16_add(wasm_i8x16_sub(src, part), gain));
+            prev = part;
+        }
+    }
+}
+
+void ass_shift_vert_wasm(uint8_t *buf, ptrdiff_t stride,
+                         size_t width, size_t height, int shift)
+{
+    ASSUME(!((uintptr_t) buf % ALIGNMENT) && !(stride % ALIGNMENT));
+    ASSUME(width > 0 && height > 0);
+
+    const v128_t mul = wasm_i8x16_splat(shift);
+    const v128_t edge = edge_mask_wasm((width - 1) % 16 + 1);
+    // walk every vertical stripe up from the bottom row, keeping the
+    // original pixels and the amount they lose of the current row
+    for (size_t x = 0; x < width; x += 16) {
+        v128_t mask = width - x < 16 ? edge : wasm_i8x16_splat(-1);
+        uint8_t *ptr = buf + x + stride * (height - 1);
+        v128_t cur = wasm_v128_load(ptr);
+        v128_t cur_part = wasm_i8x16_splat(0);
+        for (size_t y = 1; y < height; y++) {
+            v128_t prev = wasm_v128_load(ptr - stride);
+            v128_t prev_part = wasm_v128_and(shift_part_wasm(prev, mul), mask);
+            wasm_v128_store(ptr, wasm_i8x16_add(wasm_i8x16_sub(cur, cur_part),
+                                                prev_part));
+            cur = prev;
+            cur_part = prev_part;
+            ptr -= stride;
+        }
+        wasm_v128_store(ptr, wasm_i8x16_sub(cur, cur_part));
+    }
+}
 #endif
 
 
@@ -1018,6 +1118,9 @@ BitmapEngine ass_bitmap_engine_init(unsigned mask)
     engine.imul_bitmaps = ass_imul_bitmaps_wasm;
     engine.mul_bitmaps  = ass_mul_bitmaps_wasm;
     engine.be_blur      = ass_be_blur_wasm;
+    engine.fix_outline  = ass_fix_outline_wasm;
+    engine.shift_horz   = ass_shift_horz_wasm;
+    engine.shift_vert   = ass_shift_vert_wasm;
     if (!(mask & ASS_FLAG_WIDE_STRIPE)) {
         engine.stripe_unpack = ass_stripe_unpack16_wasm;
         engine.stripe_pack   = ass_stripe_pack16_wasm;

@@ -550,7 +550,7 @@ static inline void rasterizer_fill_solid(const BitmapEngine *engine,
     height >>= engine->tile_order;
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++)
-            engine->fill_solid(buf + x * step, stride, set);
+            ENGINE_CALL(engine, fill_solid, buf + x * step, stride, set);
         buf += tile_stride;
     }
 }
@@ -562,7 +562,7 @@ static inline void rasterizer_fill_halfplane(const BitmapEngine *engine,
     assert(!(width  & ((1 << engine->tile_order) - 1)));
     assert(!(height & ((1 << engine->tile_order) - 1)));
     if (width == 1 << engine->tile_order && height == 1 << engine->tile_order) {
-        engine->fill_halfplane(buf, stride, a, b, c, scale);
+        ENGINE_CALL(engine, fill_halfplane, buf, stride, a, b, c, scale);
         return;
     }
 
@@ -581,9 +581,9 @@ static inline void rasterizer_fill_halfplane(const BitmapEngine *engine,
             int64_t offs_c = offs - cc;
             int64_t abs_c = offs_c < 0 ? -offs_c : offs_c;
             if (abs_c < size)
-                engine->fill_halfplane(buf + x * step, stride, a, b, cc, scale);
+                ENGINE_CALL(engine, fill_halfplane, buf + x * step, stride, a, b, cc, scale);
             else
-                engine->fill_solid(buf + x * step, stride,
+                ENGINE_CALL(engine, fill_solid, buf + x * step, stride,
                                    ((uint32_t) (offs_c >> 32) ^ scale) & 0x80000000);
         }
         buf += tile_stride;
@@ -657,26 +657,26 @@ static bool rasterizer_fill_level(const BitmapEngine *engine, RasterizerData *rs
     }
     if (width == 1 << engine->tile_order && height == 1 << engine->tile_order) {
         if (!(flags1 & FLAG_COMPLEX)) {
-            engine->fill_generic(buf, stride, line, n_lines[0], winding[0]);
+            ENGINE_CALL(engine, fill_generic, buf, stride, line, n_lines[0], winding[0]);
             rst->size[index] = offs;
             return true;
         }
         if (!(flags0 & FLAG_COMPLEX)) {
-            engine->fill_generic(buf, stride, line1, n_lines[1], winding[1]);
+            ENGINE_CALL(engine, fill_generic, buf, stride, line1, n_lines[1], winding[1]);
             rst->size[index] = offs;
             return true;
         }
         if (flags0 & FLAG_GENERIC)
-            engine->fill_generic(buf, stride, line, n_lines[0], winding[0]);
+            ENGINE_CALL(engine, fill_generic, buf, stride, line, n_lines[0], winding[0]);
         else
-            engine->fill_halfplane(buf, stride, line->a, line->b, line->c,
+            ENGINE_CALL(engine, fill_halfplane, buf, stride, line->a, line->b, line->c,
                                    flags0 & FLAG_REVERSE ? -line->scale : line->scale);
         if (flags1 & FLAG_GENERIC)
-            engine->fill_generic(rst->tile, width, line1, n_lines[1], winding[1]);
+            ENGINE_CALL(engine, fill_generic, rst->tile, width, line1, n_lines[1], winding[1]);
         else
-            engine->fill_halfplane(rst->tile, width, line1->a, line1->b, line1->c,
+            ENGINE_CALL(engine, fill_halfplane, rst->tile, width, line1->a, line1->b, line1->c,
                                    flags1 & FLAG_REVERSE ? -line1->scale : line1->scale);
-        engine->merge(buf, stride, rst->tile);
+        ENGINE_CALL(engine, merge, buf, stride, rst->tile);
         rst->size[index] = offs;
         return true;
     }

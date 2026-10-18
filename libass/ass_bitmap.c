@@ -92,11 +92,11 @@ void ass_synth_blur(const BitmapEngine *engine, Bitmap *bm,
     if (--be) {
         be_blur_pre(buf, stride, w, h);
         do {
-            engine->be_blur( buf, stride, w, h, tmp);
+            ENGINE_CALL(engine, be_blur, buf, stride, w, h, tmp);
         } while (--be);
         be_blur_post(buf, stride, w, h);
     }
-    engine->be_blur( buf, stride, w, h, tmp);
+    ENGINE_CALL(engine, be_blur, buf, stride, w, h, tmp);
     ass_aligned_free(tmp);
 }
 
@@ -218,7 +218,7 @@ void ass_fix_outline(const BitmapEngine *engine, Bitmap *bm_g, Bitmap *bm_o)
     uint8_t *o = bm_o->buffer + (t - bm_o->top) * bm_o->stride + (l - bm_o->left);
 
     // bm_g and bm_o never share a buffer
-    engine->fix_outline( o, bm_o->stride, g, bm_g->stride,
+    ENGINE_CALL(engine, fix_outline, o, bm_o->stride, g, bm_g->stride,
                 r - l, b - t);
 }
 
@@ -236,11 +236,11 @@ void ass_shift_bitmap(const BitmapEngine *engine, Bitmap *bm,
 
     // Shift in x direction
     if (shift_x && bm->w > 1)
-        engine->shift_horz( bm->buffer, bm->stride,
+        ENGINE_CALL(engine, shift_horz, bm->buffer, bm->stride,
                     bm->w, bm->h, shift_x);
 
     // Shift in y direction
     if (shift_y && bm->h > 1)
-        engine->shift_vert( bm->buffer, bm->stride,
+        ENGINE_CALL(engine, shift_vert, bm->buffer, bm->stride,
                     bm->w, bm->h, shift_y);
 }

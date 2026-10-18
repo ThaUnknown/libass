@@ -113,4 +113,54 @@ unsigned ass_get_cpu_flags(unsigned mask);
 
 BitmapEngine ass_bitmap_engine_init(unsigned mask);
 
+/*
+ * ENGINE_CALL(engine, func, args...) calls engine->func(args...).
+ * There is no runtime CPU dispatch on wasm, but a call through the engine
+ * is a call_indirect that also keeps LTO from inlining the kernel. So if the
+ * slot holds the SIMD128 kernel, that kernel is called directly; otherwise
+ * (C tile16 rasterizer without large tiles, wide-stripe C blur) the slot is
+ * called as usual, which leaves the engine selection unchanged.
+ * Every slot used with ENGINE_CALL needs an ENGINE_WASM_<slot> entry below.
+ */
+#if defined(__wasm_simd128__)
+FillSolidTileFunc     ass_fill_solid_tile32_wasm;
+FillHalfplaneTileFunc ass_fill_halfplane_tile32_wasm;
+FillGenericTileFunc   ass_fill_generic_tile32_wasm;
+MergeTileFunc         ass_merge_tile32_wasm;
+BitmapBlendFunc       ass_add_bitmaps_wasm, ass_imul_bitmaps_wasm;
+BitmapBlendFunc       ass_fix_outline_wasm;
+BitmapMulFunc         ass_mul_bitmaps_wasm;
+BitmapShiftFunc       ass_shift_horz_wasm, ass_shift_vert_wasm;
+BeBlurFunc            ass_be_blur_wasm;
+Convert8to16Func      ass_stripe_unpack16_wasm;
+Convert16to8Func      ass_stripe_pack16_wasm;
+FilterFunc            ass_shrink_horz16_wasm, ass_shrink_vert16_wasm;
+FilterFunc            ass_expand_horz16_wasm, ass_expand_vert16_wasm;
+
+#define ENGINE_WASM_fill_solid      ass_fill_solid_tile32_wasm
+#define ENGINE_WASM_fill_halfplane  ass_fill_halfplane_tile32_wasm
+#define ENGINE_WASM_fill_generic    ass_fill_generic_tile32_wasm
+#define ENGINE_WASM_merge           ass_merge_tile32_wasm
+#define ENGINE_WASM_add_bitmaps     ass_add_bitmaps_wasm
+#define ENGINE_WASM_imul_bitmaps    ass_imul_bitmaps_wasm
+#define ENGINE_WASM_fix_outline     ass_fix_outline_wasm
+#define ENGINE_WASM_mul_bitmaps     ass_mul_bitmaps_wasm
+#define ENGINE_WASM_shift_horz      ass_shift_horz_wasm
+#define ENGINE_WASM_shift_vert      ass_shift_vert_wasm
+#define ENGINE_WASM_be_blur         ass_be_blur_wasm
+#define ENGINE_WASM_stripe_unpack   ass_stripe_unpack16_wasm
+#define ENGINE_WASM_stripe_pack     ass_stripe_pack16_wasm
+#define ENGINE_WASM_shrink_horz     ass_shrink_horz16_wasm
+#define ENGINE_WASM_shrink_vert     ass_shrink_vert16_wasm
+#define ENGINE_WASM_expand_horz     ass_expand_horz16_wasm
+#define ENGINE_WASM_expand_vert     ass_expand_vert16_wasm
+
+#define ENGINE_CALL(engine, func, ...)                  \
+    ((engine)->func == ENGINE_WASM_ ## func ?           \
+        ENGINE_WASM_ ## func(__VA_ARGS__) :             \
+        (engine)->func(__VA_ARGS__))
+#else
+#define ENGINE_CALL(engine, func, ...)  ((engine)->func(__VA_ARGS__))
+#endif
+
 #endif /* LIBASS_BITMAP_ENGINE_H */

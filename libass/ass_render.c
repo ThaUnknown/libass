@@ -303,6 +303,7 @@ static ASS_Image *my_draw_bitmap(unsigned char *bitmap, int bitmap_w,
     img->result.color = color;
     img->result.dst_x = dst_x;
     img->result.dst_y = dst_y;
+    img->result.cache_id = source ? source->id : 0;
 
     img->source = source;
     ass_cache_inc_ref(source);
@@ -885,6 +886,7 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
 
         ASS_ImagePriv *priv = (ASS_ImagePriv *) cur;
         priv->buffer = cur->bitmap = nbuffer;
+        cur->cache_id = 0;
         ass_cache_dec_ref(priv->source);
         priv->source = NULL;
     }
@@ -2723,12 +2725,16 @@ int ass_be_padding(int be)
 }
 
 
+static _Atomic AtomicInt composite_cache_id;
+
 size_t ass_composite_construct(void *key, void *value, void *priv)
 {
     ASS_Renderer *render_priv = priv;
     CompositeHashKey *k = key;
     CompositeHashValue *v = value;
     memset(v, 0, sizeof(*v));
+    v->id = (uint32_t)atomic_fetch_add_explicit(&composite_cache_id, 1,
+                                                memory_order_relaxed) + 1;
 
     ASS_Rect rect, rect_o;
     rectangle_reset(&rect);

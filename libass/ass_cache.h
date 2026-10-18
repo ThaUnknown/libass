@@ -34,6 +34,7 @@ typedef uint64_t ass_hashcode;
 
 typedef struct {
     Bitmap bm, bm_o, bm_s;
+    uint32_t id;
 } CompositeHashValue;
 
 typedef struct {

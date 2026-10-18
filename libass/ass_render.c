@@ -1742,6 +1742,9 @@ static void trim_whitespace(RenderContext *state)
     GlyphInfo *cur;
     TextInfo *ti = &state->text_info;
 
+    if (!ti->length)
+      return;
+
     // Mark trailing spaces
     i = ti->length - 1;
     cur = ti->glyphs + i;
@@ -1763,17 +1766,21 @@ static void trim_whitespace(RenderContext *state)
         cur->starts_new_run = true;
 
     // Mark all extraneous whitespace inbetween
+    // XXX: should this really start at 0 again?
     for (i = 0; i < ti->length; ++i) {
         cur = ti->glyphs + i;
         if (cur->linebreak) {
             // Mark whitespace before
             j = i - 1;
             cur = ti->glyphs + j;
-            while (j && IS_WHITESPACE(cur)) {
+            // Use > instead of >= to avoid UB from moving the pointer outside valid range.
+            // White space at j == 0 was already trimmed in the "leading" loop before anyway.
+            while (j > 0 && IS_WHITESPACE(cur)) {
                 cur->skip = true;
                 cur->is_trimmed_whitespace = true;
                 cur = ti->glyphs + --j;
             }
+
             // A break itself can contain a whitespace, too
             cur = ti->glyphs + i;
             if (cur->symbol == ' ' || cur->symbol == '\n') {
@@ -1841,10 +1848,8 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
             last_breakable = i;
         }
 
-        if (break_at != -1) {
+        if (break_at != -1 && break_at + 1 < text_info->length) {
             // need to use one more line
-            // marking break_at+1 as start of a new line
-            int lead = break_at + 1;    // the first symbol of the new line
             if (text_info->n_lines >= text_info->max_lines) {
                 // Try to raise the maximum number of lines
                 bool success = false;
@@ -1859,12 +1864,13 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
                     text_info->n_lines--;
                 }
             }
-            if (lead < text_info->length) {
-                text_info->glyphs[lead].linebreak = break_type;
-                last_breakable = -1;
-                s1 = text_info->glyphs + lead;
-                text_info->n_lines++;
-            }
+
+            // marking break_at+1 as start of a new line
+            int lead = break_at + 1; // the first symbol of the new line
+            text_info->glyphs[lead].linebreak = break_type;
+            last_breakable = -1;
+            s1 = text_info->glyphs + lead;
+            text_info->n_lines++;
         }
     }
 }
@@ -1873,6 +1879,7 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
  * Rewind from a linestart position back to the first non-whitespace (0x20)
  * character. Trailing ASCII whitespace gets trimmed in rendering.
  * Assumes both arguments are part of the same array.
+ * start2 is never dereferenced.
  */
 static inline GlyphInfo *rewind_trailing_spaces(GlyphInfo *start1, GlyphInfo* start2)
 {
@@ -1905,6 +1912,8 @@ wrap_lines_rebalance(RenderContext *state, double max_text_width, char *unibrks)
             if ((i == text_info->length) || cur->linebreak) {
                 s1 = s2;
                 s2 = s3;
+                // WARNING: this may point one past the end and thus
+                // must ONLY be used for pointer comparison; never dereferenced!
                 s3 = cur;
                 if (s1 && (s2->linebreak == 1)) {       // have at least 2 lines, and linebreak is 'soft'
                     double l1, l2, l1_new, l2_new;
@@ -1957,40 +1966,6 @@ wrap_lines_rebalance(RenderContext *state, double max_text_width, char *unibrks)
 #undef DIFF
 }
 
-static void
-wrap_lines_measure(RenderContext *state, char *unibrks)
-{
-    TextInfo *text_info = &state->text_info;
-    int cur_line = 1;
-    int i = 0;
-
-    while (i < text_info->length && text_info->glyphs[i].skip)
-        ++i;
-    double pen_shift_x = d6_to_double(-text_info->glyphs[i].pos.x);
-    double pen_shift_y = 0.;
-
-    for (i = 0; i < text_info->length; ++i) {
-        GlyphInfo *cur = text_info->glyphs + i;
-        if (cur->linebreak) {
-            while (i < text_info->length && cur->skip && !FORCEBREAK(cur->symbol, i))
-                cur = text_info->glyphs + ++i;
-            double height =
-                text_info->lines[cur_line - 1].desc +
-                text_info->lines[cur_line].asc;
-            text_info->lines[cur_line - 1].len = i -
-                text_info->lines[cur_line - 1].offset;
-            text_info->lines[cur_line].offset = i;
-            cur_line++;
-            pen_shift_x = d6_to_double(-cur->pos.x);
-            pen_shift_y += height + state->renderer->settings.line_spacing;
-        }
-        cur->pos.x += double_to_d6(pen_shift_x);
-        cur->pos.y += double_to_d6(pen_shift_y);
-    }
-    text_info->lines[cur_line - 1].len =
-        text_info->length - text_info->lines[cur_line - 1].offset;
-}
-
 #undef ALLOWBREAK
 #undef FORCEBREAK
 
@@ -2037,7 +2012,6 @@ wrap_lines_smart(RenderContext *state, double max_text_width)
 
     trim_whitespace(state);
     measure_text(state);
-    wrap_lines_measure(state, unibrks);
 }
 
 /**
@@ -3562,6 +3536,25 @@ static bool start_threads(ASS_Renderer *priv)
 #endif
 
 /**
+ * \brief free a single image.
+ * \param img image as returned by ass_render_frame().
+ *        Only img will be freed, not img->next.
+ * \return img->next
+ * Should not be called outside of ass_frame_unref
+ * once the image list's refcounting is set up.
+ */
+static ASS_Image *ass_free_image(ASS_Image *img) {
+    ASS_Image *next = img->next;
+
+    ASS_ImagePriv *priv = (ASS_ImagePriv *) img;
+    ass_cache_dec_ref(priv->source);
+    ass_aligned_free(priv->buffer);
+    free(priv);
+
+    return next;
+}
+
+/**
  * \brief render a frame
  * \param priv library handle
  * \param track track
@@ -3640,16 +3633,25 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
     if (cnt > 0)
         fix_collisions(priv, last, priv->eimg + cnt - last);
 
-    // concat lists
+    // concat lists, removing fully transparent bitmaps
     ASS_Image **tail = &priv->images_root;
     for (int i = 0; i < cnt; i++) {
         ASS_Image *cur = priv->eimg[i].imgs;
         while (cur) {
+            if (_a(cur->color) == 0xFF) {
+                cur = ass_free_image(cur);
+                continue;
+            }
+
             *tail = cur;
             tail = &cur->next;
             cur = cur->next;
         }
     }
+
+    // If the last image was skipped in the above loop, *tail may not be NULL and needs to be set to NULL.
+    *tail = NULL;
+
     ass_frame_ref(priv->images_root);
 
     if (detect_change)
@@ -3685,10 +3687,6 @@ void ass_frame_unref(ASS_Image *img)
     if (!img || --((ASS_ImagePriv *) img)->ref_count)
         return;
     do {
-        ASS_ImagePriv *priv = (ASS_ImagePriv *) img;
-        img = img->next;
-        ass_cache_dec_ref(priv->source);
-        ass_aligned_free(priv->buffer);
-        free(priv);
+        img = ass_free_image(img);
     } while (img);
 }

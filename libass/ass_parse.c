@@ -219,7 +219,7 @@ static bool parse_vector_clip(RenderContext *state,
 
     int scale = 1;
     if (nargs == 2)
-        scale = argtoi32(args[0]);
+        scale = FFMAX(argtoi32(args[0]), 1);
 
     struct arg text = args[nargs - 1];
     state->clip_drawing_text.str = text.start;

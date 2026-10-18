@@ -1,3 +1,15 @@
+libass (0.17.5)
+ * Fix limited OOB read and write in wrap_lines_measure (GHSA-pjjp-65r7-ppgm; CVE-2026-61627)
+ * Fix OOB bit clears for negative Matroska ReadOrder fields (GHSA-5gf7-wjfm-vmvm; CVE-2026-61626)
+ * Fix \fay with glyph clusters
+ * Fix small alpha changes not always splitting runs when combined with fade
+ * Fix compilation with MSVC-mode clang
+ * Fades are now applied to BorderStyle=4 boxes too
+ * Fonts using legacy arabic Windows charmaps are now supported
+ * ass_render_frame no longer returns fully transparent images
+ * Avoid MSVC’s subpar code generation for isnan to bring performance closer to other compilers
+ * Avoid SSE instructions if compiler baseline already includes AVX
+
 libass (0.17.4)
  * add new API to prune old events from memory
    * ass_prune_events for manual pruning

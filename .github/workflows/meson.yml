@@ -70,18 +70,17 @@ jobs:
         shell: ${{ matrix.config.shell || 'bash' }}
 
     env:
-      VS: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
       ART_SAMPLES: ${{ github.workspace }}/ext_art-samples
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_MAXSIZE: 200M
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: '0'
 
       - name: Download test samples
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: libass/libass-tests
           path: ${{ env.ART_SAMPLES }}
@@ -110,11 +109,20 @@ jobs:
 
       - name: Restore cache
         if: matrix.config.msvc
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.SCCACHE_DIR }}
           key: windows-msvc-${{ matrix.config.arch }}-${{ steps.get_time.outputs.timestamp }}
           restore-keys: windows-msvc-
+
+      - name: Find Visual Studio
+        if: matrix.config.msvc
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw "Could not find a Visual Studio installation" }
+          "VS=$vsPath"
+          "VS=$vsPath" >> $env:GITHUB_ENV
 
       - name: Install MSVC dependecies with choco
         if: matrix.config.msvc
@@ -170,7 +178,7 @@ jobs:
         run: cat build/meson-logs/testlog.txt
 
       - name: Save Cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: always() && matrix.config.msvc
         with:
           path: ${{ env.SCCACHE_DIR }}
@@ -200,7 +208,7 @@ jobs:
                   fontconfig-dev libpng-dev git
 
       - name: checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: configure
         run: |
@@ -262,7 +270,7 @@ jobs:
                   libpng-dev meson ninja-build
 
       - name: checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: setup distdir
         run: |

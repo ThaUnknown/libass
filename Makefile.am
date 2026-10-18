@@ -15,6 +15,11 @@ AM_CFLAGS = -D_GNU_SOURCE -D_XPLATFORM_SOURCE
 
 EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh
 
+# Source of pre-generated C files
+EXTRA_DIST += legacy_arabic_cmap/ArabicPUASimplified.txt \
+              legacy_arabic_cmap/ArabicPUATraditional.txt \
+              legacy_arabic_cmap/gen_arabic_charmap.py
+
 # Meson build setup
 EXTRA_DIST += gen_defs.py meson_options.txt meson.build \
               libass/meson.build libass/ass/meson.build \

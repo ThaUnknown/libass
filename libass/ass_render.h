@@ -189,7 +189,6 @@ typedef struct glyph_info {
 
 typedef struct {
     double asc, desc;
-    int offset, len;
 } LineInfo;
 
 typedef struct {

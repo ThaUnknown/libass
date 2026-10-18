@@ -31,6 +31,7 @@ typedef struct ass_font ASS_Font;
 #include "ass_cache.h"
 #include "ass_outline.h"
 #include "ass_threading.h"
+#include "ass_arabic_charmap.h"
 
 #define VERTICAL_LOWER_BOUND 0x02f1
 

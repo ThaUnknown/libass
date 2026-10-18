@@ -200,6 +200,11 @@ static int test_and_set_read_order_bit(ASS_Track *track, int id)
 
 static inline void clear_read_order_bit(ASS_Track *track, int id)
 {
+    // we previously loaded a packet with an invalid ReadOrder field
+    // (or int overflow) and decided to just skip checking for duplicates
+    if (id < 0)
+        return;
+
     int index = id >> 5;
     if (index < track->parser_priv->read_order_elems) {
         uint32_t mask = ~(1u << (id & 0x1F));

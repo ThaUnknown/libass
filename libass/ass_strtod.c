@@ -42,6 +42,12 @@ const double powersOf10[] = {   /* Table giving binary powers of 10.  Entry */
 };
 
 static
+const double exactPowersOf10[] = {
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+    1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22
+};
+
+static
 const double negPowOf10[] = {   /* Table giving negative binary powers */
     0.1,                        /* of 10.  Entry is 10^-2^i. */
     0.01,                       /* Used to convert decimal exponents */
@@ -131,6 +137,40 @@ ass_strtod(
             p += 1;
         }
         sign = 0;
+    }
+
+    /*
+     * Up to nine significant digits and no exponent: frac1 below stays 0
+     * and 10^n is exact up to 10^22, so this one division is the result
+     * the general path computes.
+     */
+    {
+        const char *q = p;
+        unsigned value = 0;
+        int digits = 0, significant = 0, decimals = 0, point = 0;
+        for (;; q++) {
+            c = *q;
+            if (ass_isdigit(c)) {
+                digits++;
+                decimals += point;
+                if (value || c != '0') {
+                    if (++significant > 9)
+                        break;
+                    value = value * 10 + (c - '0');
+                }
+            } else if (c == '.' && !point) {
+                point = 1;
+            } else {
+                break;
+            }
+        }
+        if (digits && significant <= 9 && decimals <= 22 && c != 'e' && c != 'E') {
+            fraction = decimals ? value / exactPowersOf10[decimals] : value;
+            if (endPtr != NULL) {
+                *endPtr = (char *) q;
+            }
+            return sign ? -fraction : fraction;
+        }
     }
 
     /*

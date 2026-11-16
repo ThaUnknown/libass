@@ -60,7 +60,7 @@ struct ass_shaper {
 
     // OpenType features
     int n_features;
-    hb_feature_t *features;
+    hb_feature_t features[NUM_FEATURES];
     hb_language_t language;
 
     // Glyph and face-size metrics caches, to speed up shaping
@@ -71,6 +71,11 @@ struct ass_shaper {
 
     hb_font_funcs_t *font_funcs;
     hb_buffer_t *buf;
+    hb_shape_plan_t *last_plan;
+    hb_segment_properties_t last_props;
+    hb_feature_t last_features[NUM_FEATURES];
+    hb_font_t *last_font;
+    FaceSizeMetricsHashKey last_font_key;
 
 #ifdef USE_FRIBIDI_EX_API
     FriBidiBracketType *btypes;
@@ -144,7 +149,9 @@ static bool check_par_allocations(ASS_Shaper *shaper, size_t n_pars)
  */
 void ass_shaper_free(ASS_Shaper *shaper)
 {
-    free(shaper->features);
+    hb_shape_plan_destroy(shaper->last_plan);
+    hb_font_destroy(shaper->last_font);
+    ass_cache_dec_ref(shaper->last_font_key.font);
     free(shaper->ctypes);
 #ifdef USE_FRIBIDI_EX_API
     free(shaper->btypes);
@@ -162,12 +169,8 @@ void ass_shaper_free(ASS_Shaper *shaper)
  * \brief set up the HarfBuzz OpenType feature list with some
  * standard features.
  */
-static bool init_features(ASS_Shaper *shaper)
+static void init_features(ASS_Shaper *shaper)
 {
-    shaper->features = calloc(NUM_FEATURES, sizeof(hb_feature_t));
-    if (!shaper->features)
-        return false;
-
     shaper->n_features = NUM_FEATURES;
     shaper->features[VERT].tag = HB_TAG('v', 'e', 'r', 't');
     shaper->features[VERT].end = UINT_MAX;
@@ -179,8 +182,6 @@ static bool init_features(ASS_Shaper *shaper)
     shaper->features[LIGA].end = UINT_MAX;
     shaper->features[CLIG].tag = HB_TAG('c', 'l', 'i', 'g');
     shaper->features[CLIG].end = UINT_MAX;
-
-    return true;
 }
 
 /**
@@ -536,6 +537,11 @@ static hb_font_t *get_hb_font(ASS_Shaper *shaper, GlyphInfo *info)
         .face_index = info->face_index,
         .size = info->font_size,
     };
+    if (shaper->last_font && shaper->last_font_key.font == key.font &&
+        shaper->last_font_key.size == key.size &&
+        shaper->last_font_key.face_index == key.face_index)
+        return hb_font_reference(shaper->last_font);
+
     FT_Size_Metrics *m = ass_cache_get(shaper->face_size_metrics_cache, shaper->cache_client, &key, NULL);
     if (!m)
         return NULL;
@@ -559,6 +565,13 @@ static hb_font_t *get_hb_font(ASS_Shaper *shaper, GlyphInfo *info)
 
     update_hb_size(hb_font, font->faces[info->face_index], m);
 
+    hb_shape_plan_destroy(shaper->last_plan);
+    shaper->last_plan = NULL;
+    hb_font_destroy(shaper->last_font);
+    ass_cache_dec_ref(shaper->last_font_key.font);
+    shaper->last_font = hb_font_reference(hb_font);
+    shaper->last_font_key = key;
+    ass_cache_inc_ref(key.font);
     return hb_font;
 }
 
@@ -739,14 +752,26 @@ typedef struct {
 
 static bool shape_run(const ShapeRun *run)
 {
-    hb_font_t *font = get_hb_font(run->shaper, run->info);
+    // Use the OpenType backend for compatibility with GDI-based renderers.
+    static const char *const shapers[] = {"ot", NULL};
+    ASS_Shaper *shaper = run->shaper;
+    hb_font_t *font = get_hb_font(shaper, run->info);
     if (!font)
         return false;
     hb_buffer_pre_allocate(run->buf, run->item_length);
     hb_buffer_add_utf32(run->buf, run->text, run->text_length,
             run->item_offset, run->item_length);
     hb_buffer_set_segment_properties(run->buf, &run->props);
-    hb_shape(font, run->buf, run->features, run->n_features);
+    if (!shaper->last_plan ||
+        !hb_segment_properties_equal(&run->props, &shaper->last_props) ||
+        memcmp(run->features, shaper->last_features, sizeof(shaper->last_features))) {
+        hb_shape_plan_destroy(shaper->last_plan);
+        shaper->last_plan = hb_shape_plan_create_cached(hb_font_get_face(font),
+                &run->props, run->features, run->n_features, shapers);
+        shaper->last_props = run->props;
+        memcpy(shaper->last_features, run->features, sizeof(shaper->last_features));
+    }
+    hb_shape_plan_execute(shaper->last_plan, font, run->buf, run->features, run->n_features);
     hb_font_destroy(font);
     return true;
 }
@@ -1238,8 +1263,7 @@ ASS_Shaper *ass_shaper_new(Cache *metrics_cache, Cache *face_size_metrics_cache,
 
     shaper->base_direction = FRIBIDI_PAR_ON;
 
-    if (!init_features(shaper))
-        goto error;
+    init_features(shaper);
     shaper->face_size_metrics_cache = face_size_metrics_cache;
     shaper->metrics_cache = metrics_cache;
     shaper->shape_cache = shape_cache;

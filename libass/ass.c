@@ -1433,7 +1433,7 @@ static char *sub_recode(ASS_Library *library, char *data, size_t size,
 {
     iconv_t icdsc;
     char *tocp = "UTF-8";
-    char *outbuf;
+    char *outbuf = NULL;
     assert(codepage);
 
     if ((icdsc = iconv_open(tocp, codepage)) != (iconv_t) (-1)) {
@@ -1443,10 +1443,13 @@ static char *sub_recode(ASS_Library *library, char *data, size_t size,
         return NULL;
     }
 
+    if (size == SIZE_MAX)
+        goto out;
+
     {
-        size_t osize = size;
+        size_t osize = size + 1;
         size_t ileft = size;
-        size_t oleft = size - 1;
+        size_t oleft = size;
         char *ip;
         char *op;
         size_t rc;
@@ -1468,7 +1471,9 @@ static char *sub_recode(ASS_Library *library, char *data, size_t size,
             if (rc == (size_t) (-1)) {
                 if (errno == E2BIG) {
                     size_t offset = op - outbuf;
-                    char *nbuf = realloc(outbuf, osize + size);
+                    char *nbuf = NULL;
+                    if (size <= SIZE_MAX - osize)
+                        nbuf = realloc(outbuf, osize + size);
                     if (!nbuf) {
                         free(outbuf);
                         outbuf = 0;
@@ -1615,6 +1620,8 @@ ASS_Track *ass_read_memory(ASS_Library *library, char *buf,
     }
 #endif
     if (!copied) {
+        if (bufsize == SIZE_MAX)
+            return 0;
         char *newbuf = malloc(bufsize + 1);
         if (!newbuf)
             return 0;

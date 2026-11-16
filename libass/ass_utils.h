@@ -57,15 +57,15 @@
 #define FEATURE_MASK(feat) (((uint32_t) 1) << (feat))
 
 #if DEBUG_LEVEL >= 1
-    #define ass_assert1(x) assert(x)
+    #define ASS_ASSERT1(x) assert(x)
 #else
-    #define ass_assert1(x) (void)0
+    #define ASS_ASSERT1(x) ((void) 0)
 #endif
 
 #if DEBUG_LEVEL >= 2
-    #define ass_assert2(x) assert(x)
+    #define ASS_ASSERT2(x) assert(x)
 #else
-    #define ass_assert2(x) (void)0
+    #define ASS_ASSERT2(x) ((void) 0)
 #endif
 
 #if DEBUG_LEVEL >= 3

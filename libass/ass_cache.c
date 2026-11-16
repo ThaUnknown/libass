@@ -578,7 +578,7 @@ retry:
             uintptr_t last_used = atomic_exchange_explicit(&item->last_used_frame, cache->cur_frame, memory_order_acquire);
 
             if (last_used != cache->cur_frame) {
-                ass_assert1(!item->promote_next);
+                ASS_ASSERT1(!item->promote_next);
                 item->promote_next = client->promote_first;
                 client->promote_first = item;
             }
@@ -654,7 +654,7 @@ retry:
 
     void *value = (char *) item + CACHE_ITEM_SIZE;
     size_t size = desc->construct_func(new_key, value, priv);
-    ass_assert1(size);
+    ASS_ASSERT1(size);
 
     atomic_fetch_add_explicit(&cache->cache_size, size + (size == 1 ? 0 : CACHE_ITEM_SIZE), memory_order_relaxed);
 
@@ -680,8 +680,8 @@ void *ass_cache_key(void *value)
 
 static inline void destroy_item(const CacheDesc *desc, CacheItem *item)
 {
-    ass_assert1(item->desc == desc);
-    ass_assert2(!atomic_load_explicit(&item->next, memory_order_acquire) && !item->prev);
+    ASS_ASSERT1(item->desc == desc);
+    ASS_ASSERT2(!atomic_load_explicit(&item->next, memory_order_acquire) && !item->prev);
     char *value = (char *) item + CACHE_ITEM_SIZE;
     if (desc->key_destruct_func)
         desc->key_destruct_func(value + align_cache(desc->value_size));
@@ -695,15 +695,15 @@ void ass_cache_inc_ref(void *value)
     if (!value)
         return;
     CacheItem *item = value_to_item(value);
-    ass_assert2(atomic_load_explicit(&item->size, memory_order_acquire));
-    ass_assert2(atomic_load_explicit(&item->ref_count, memory_order_acquire));
+    ASS_ASSERT2(atomic_load_explicit(&item->size, memory_order_acquire));
+    ASS_ASSERT2(atomic_load_explicit(&item->ref_count, memory_order_acquire));
     inc_ref(&item->ref_count);
 }
 
 static void dec_ref_item(CacheItem *item)
 {
-    ass_assert2(atomic_load_explicit(&item->size, memory_order_acquire));
-    ass_assert2(atomic_load_explicit(&item->ref_count, memory_order_acquire));
+    ASS_ASSERT2(atomic_load_explicit(&item->size, memory_order_acquire));
+    ASS_ASSERT2(atomic_load_explicit(&item->ref_count, memory_order_acquire));
     if (dec_ref(&item->ref_count) == 0)
         destroy_item(item->desc, item);
 }
@@ -721,11 +721,11 @@ void ass_cache_promote(CacheClientSet *set)
     for (CacheClient *client = set->first_client; client; client = client->next) {
         while (client->promote_first) {
             CacheItem *item = client->promote_first;
-            ass_assert2(item->prev);
-            ass_assert2(item->queue_prev || !item->queue_next);
-            ass_assert2(item->cache->queue_last);
-            ass_assert2(item->queue_next != item);
-            ass_assert2(item->queue_prev != &item->queue_next);
+            ASS_ASSERT2(item->prev);
+            ASS_ASSERT2(item->queue_prev || !item->queue_next);
+            ASS_ASSERT2(item->cache->queue_last);
+            ASS_ASSERT2(item->queue_next != item);
+            ASS_ASSERT2(item->queue_prev != &item->queue_next);
 
             // Skip if we're already at the end of the queue
             if (!item->queue_prev || item->queue_next) {
@@ -739,7 +739,7 @@ void ass_cache_promote(CacheClientSet *set)
                 *item->cache->queue_last = item;
                 item->cache->queue_last = &item->queue_next;
 
-                ass_assert2(item->queue_prev != &item->queue_next);
+                ASS_ASSERT2(item->queue_prev != &item->queue_next);
             }
 
             client->promote_first = item->promote_next;
@@ -750,16 +750,16 @@ void ass_cache_promote(CacheClientSet *set)
 
 void ass_cache_cut(Cache *cache, size_t max_size)
 {
-    ass_assert1(cache->queue_last);
+    ASS_ASSERT1(cache->queue_last);
 
     while (atomic_load_explicit(&cache->cache_size, memory_order_relaxed) > max_size && cache->queue_first) {
         CacheItem *item = cache->queue_first;
-        ass_assert2(item->prev);
-        ass_assert2(atomic_load_explicit(&item->size, memory_order_acquire));
-        ass_assert2(item->queue_prev == &cache->queue_first);
-        ass_assert2(item->queue_next != item);
-        ass_assert2(item->queue_prev != &item->queue_next);
-        ass_assert2(!item->promote_next);
+        ASS_ASSERT2(item->prev);
+        ASS_ASSERT2(atomic_load_explicit(&item->size, memory_order_acquire));
+        ASS_ASSERT2(item->queue_prev == &cache->queue_first);
+        ASS_ASSERT2(item->queue_next != item);
+        ASS_ASSERT2(item->queue_prev != &item->queue_next);
+        ASS_ASSERT2(!item->promote_next);
 
         if (atomic_load_explicit(&item->last_used_frame, memory_order_relaxed) == cache->cur_frame) {
             // everything after this must have been last used this frame
@@ -767,7 +767,7 @@ void ass_cache_cut(Cache *cache, size_t max_size)
         }
 
         if (item->queue_next) {
-            ass_assert2(item->queue_next->queue_prev != &item->queue_next->queue_next);
+            ASS_ASSERT2(item->queue_next->queue_prev != &item->queue_next->queue_next);
             item->queue_next->queue_prev = &cache->queue_first;
         } else {
             cache->queue_last = &cache->queue_first;
@@ -799,9 +799,9 @@ void ass_cache_empty(Cache *cache)
     for (int i = 0; i < cache->buckets; i++) {
         CacheItem *item = atomic_load_explicit(&cache->map[i], memory_order_relaxed);
         while (item) {
-            ass_assert2(item->queue_prev || !item->queue_next);
-            ass_assert2(item->prev);
-            ass_assert2(atomic_load_explicit(&item->size, memory_order_acquire));
+            ASS_ASSERT2(item->queue_prev || !item->queue_next);
+            ASS_ASSERT2(item->prev);
+            ASS_ASSERT2(atomic_load_explicit(&item->size, memory_order_acquire));
             CacheItem *next = atomic_load_explicit(&item->next, memory_order_relaxed);
 
             atomic_store_explicit(&item->next, NULL, memory_order_relaxed);
@@ -820,7 +820,7 @@ void ass_cache_empty(Cache *cache)
         atomic_store_explicit(&cache->map[i], NULL, memory_order_release);
     }
 
-    ass_assert2(!atomic_load_explicit(&cache->cache_size, memory_order_acquire));
+    ASS_ASSERT2(!atomic_load_explicit(&cache->cache_size, memory_order_acquire));
 
     cache->queue_first = NULL;
     cache->queue_last = &cache->queue_first;

@@ -492,6 +492,17 @@ FT_Face ass_face_stream(ASS_Library *lib, FT_Library ftlib, const char *name,
     return face;
 }
 
+#if ENABLE_THREADS && !defined(HAVE_STDATOMIC_H) && defined(_WIN32) && !defined(_WIN64)
+#error "The font caches are read without a lock and need 64-bit atomic loads"
+#endif
+
+// Lookups can read the slots meanwhile, so clear them one atomic store at a time.
+static void clear_cache(_Atomic uint64_t *cache, size_t size)
+{
+    for (size_t i = 0; i < size; i++)
+        atomic_store_explicit(&cache[i], 0, memory_order_relaxed);
+}
+
 /**
  * \brief Select a face with the given charcode and add it to ASS_Font
  * \return index of the new face in font->faces, -1 if failed
@@ -541,9 +552,13 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
     ass_charmap_magic(font->library, face);
     set_font_metrics(face);
 
+    font->char_index_cache[n_faces] = calloc(ASS_FONT_CHAR_INDEX_CACHE_SIZE,
+                                             sizeof(*font->char_index_cache[n_faces]));
     font->faces[n_faces] = face;
     font->faces_uid[n_faces] = uid;
-    if (!ass_create_hb_font(font, n_faces)) {
+    if (!font->char_index_cache[n_faces] || !ass_create_hb_font(font, n_faces)) {
+        free(font->char_index_cache[n_faces]);
+        font->char_index_cache[n_faces] = NULL;
         FT_Done_Face(face);
         goto cleanup;
     }
@@ -552,7 +567,7 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
     ret = n_faces;
 
     // a new face can resolve previously failed lookups, invalidate the cache
-    memset(font->cmap_cache, 0, sizeof(font->cmap_cache));
+    clear_cache(font->cmap_cache, ASS_FONT_CMAP_CACHE_SIZE);
 
 cleanup:
     ass_fontselect_unlock(fontsel);
@@ -743,6 +758,16 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
         return 0;
     }
 
+    _Atomic uint64_t *slot =
+        &font->cmap_cache[ass_font_cache_slot(symbol, ASS_FONT_CMAP_CACHE_BITS)];
+    // acquire: the entry's face must be visible to the caller
+    uint64_t entry = atomic_load_explicit(slot, memory_order_acquire);
+    if (entry >> 32 == symbol) {
+        *face_index = (entry >> 24) & 0xFF;
+        *glyph_index = entry & 0xFFFFFF;
+        return 1;
+    }
+
     ass_font_lock(font);
 
     AtomicInt n_faces = atomic_load_explicit(&font->n_faces, memory_order_acquire);
@@ -750,13 +775,6 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
     if (n_faces == 0) {
         *face_index = 0;
         ret = 0;
-        goto done;
-    }
-
-    ASS_FontCmapEntry *ce = &font->cmap_cache[ass_font_cmap_slot(symbol)];
-    if (ce->symbol == symbol) {
-        *face_index = ce->face_index;
-        *glyph_index = ce->glyph_index;
         goto done;
     }
 
@@ -798,8 +816,11 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
                 // subsequent lookups on this face resolve.
                 if (index == 0 && charmap)
                     FT_Set_Charmap(face, charmap);
-                else // The active charmap changed, clear the cache.
-                    memset(font->cmap_cache, 0, sizeof(font->cmap_cache));
+                else { // The active charmap changed, clear the caches.
+                    clear_cache(font->cmap_cache, ASS_FONT_CMAP_CACHE_SIZE);
+                    clear_cache(font->char_index_cache[face_idx],
+                                ASS_FONT_CHAR_INDEX_CACHE_SIZE);
+                }
             }
             if (index == 0) {
                 ass_msg(font->library, MSGL_ERR,
@@ -814,15 +835,38 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
     *face_index  = FFMAX(*face_index, 0);
     *glyph_index = index;
 
-    // recompute after add_face/charmap reset may have cleared the cache
-    ce = &font->cmap_cache[ass_font_cmap_slot(symbol)];
-    ce->symbol = symbol;
-    ce->face_index = *face_index;
-    ce->glyph_index = index;
+    // Glyph indices of sfnt fonts fit in 16 bits; do not cache what does not fit.
+    if ((unsigned) index < 1u << 24)
+        atomic_store_explicit(slot, (uint64_t) symbol << 32 |
+                              (uint64_t) *face_index << 24 | index,
+                              memory_order_release);
 
 done:
     ass_font_unlock(font);
     return ret;
+}
+
+/**
+ * \brief FT_Get_Char_Index() of the symbol after ass_font_index_magic(),
+ * through the face's cache. Do not call under ass_font_lock().
+ */
+uint32_t ass_font_get_char_index(ASS_Font *font, int face_index, uint32_t symbol)
+{
+    _Atomic uint64_t *slot = &font->char_index_cache[face_index]
+        [ass_font_cache_slot(symbol, ASS_FONT_CHAR_INDEX_CACHE_BITS)];
+    uint64_t entry = atomic_load_explicit(slot, memory_order_relaxed);
+    if (entry && entry >> 32 == symbol)
+        return (uint32_t) entry - 1;
+
+    ass_font_lock(font);
+    FT_Face face = font->faces[face_index];
+    uint32_t index = ass_font_index_magic(face, symbol);
+    if (index)
+        index = FT_Get_Char_Index(face, index);
+    atomic_store_explicit(slot, (uint64_t) symbol << 32 | (index + 1),
+                          memory_order_relaxed);
+    ass_font_unlock(font);
+    return index;
 }
 
 /**
@@ -877,6 +921,7 @@ void ass_font_clear(ASS_Font *font)
             FT_Done_Face(font->faces[i]);
         if (font->hb_fonts[i])
             hb_font_destroy(font->hb_fonts[i]);
+        free(font->char_index_cache[i]);
     }
 
 #if ENABLE_THREADS

@@ -43,19 +43,20 @@ typedef struct ass_font ASS_Font;
 // Direct-mapped cache for codepoint -> (face, glyph index) lookups.
 // Avoids repeated FreeType charmap searches and, more importantly,
 // repeated font fallback searches for codepoints no font covers.
-// Must be accessed under ass_font_lock().
+// Lookups read it without the lock; ass_font_get_index() fills it under ass_font_lock().
+// Entry: symbol << 32 | face index << 24 | glyph index, 0 = empty slot.
 #define ASS_FONT_CMAP_CACHE_BITS 8
 #define ASS_FONT_CMAP_CACHE_SIZE (1 << ASS_FONT_CMAP_CACHE_BITS)
 
-typedef struct {
-    uint32_t symbol;   // 0 = empty slot
-    uint32_t glyph_index;
-    int face_index;
-} ASS_FontCmapEntry;
+// Per-face cache for FreeType glyph indices, which the shaper looks up.
+// Lookups read it without the lock and fill it under ass_font_lock().
+// Entry: symbol << 32 | (glyph index + 1), 0 = empty slot.
+#define ASS_FONT_CHAR_INDEX_CACHE_BITS 9
+#define ASS_FONT_CHAR_INDEX_CACHE_SIZE (1 << ASS_FONT_CHAR_INDEX_CACHE_BITS)
 
-static inline unsigned ass_font_cmap_slot(uint32_t symbol)
+static inline unsigned ass_font_cache_slot(uint32_t symbol, int bits)
 {
-    return (symbol * 2654435761u) >> (32 - ASS_FONT_CMAP_CACHE_BITS);
+    return (symbol * 2654435761u) >> (32 - bits);
 }
 
 struct ass_font {
@@ -66,7 +67,8 @@ struct ass_font {
     FT_Face faces[ASS_FONT_MAX_FACES];
     struct hb_font_t *hb_fonts[ASS_FONT_MAX_FACES];
     _Atomic AtomicInt n_faces;
-    ASS_FontCmapEntry cmap_cache[ASS_FONT_CMAP_CACHE_SIZE];
+    _Atomic uint64_t cmap_cache[ASS_FONT_CMAP_CACHE_SIZE];
+    _Atomic uint64_t *char_index_cache[ASS_FONT_MAX_FACES];
 
 #if ENABLE_THREADS
     pthread_mutex_t mutex;
@@ -84,6 +86,7 @@ void ass_font_get_asc_desc(ASS_Font *font, int face_index,
 int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
                        uint32_t symbol, int *face_index, int *glyph_index);
 uint32_t ass_font_index_magic(FT_Face face, uint32_t symbol);
+uint32_t ass_font_get_char_index(ASS_Font *font, int face_index, uint32_t symbol);
 bool ass_font_get_glyph(ASS_Font *font, int face_index, int index,
                         ASS_Hinting hinting);
 void ass_font_clear(ASS_Font *font);

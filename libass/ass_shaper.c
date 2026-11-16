@@ -345,11 +345,9 @@ get_glyph_nominal(hb_font_t *font, void *font_data, hb_codepoint_t unicode,
                   hb_codepoint_t *glyph, void *user_data)
 {
     struct ass_shaper_metrics_data *metrics_priv = font_data;
-    FT_Face face = metrics_priv->hash_key.font->faces[metrics_priv->hash_key.face_index];
 
-    *glyph = ass_font_index_magic(face, unicode);
-    if (*glyph)
-        *glyph = FT_Get_Char_Index(face, *glyph);
+    *glyph = ass_font_get_char_index(metrics_priv->hash_key.font,
+                                     metrics_priv->hash_key.face_index, unicode);
     if (!*glyph)
         return false;
 
@@ -365,9 +363,11 @@ get_glyph_variation(hb_font_t *font, void *font_data, hb_codepoint_t unicode,
     struct ass_shaper_metrics_data *metrics_priv = font_data;
     FT_Face face = metrics_priv->hash_key.font->faces[metrics_priv->hash_key.face_index];
 
+    ass_font_lock(metrics_priv->hash_key.font);
     *glyph = ass_font_index_magic(face, unicode);
     if (*glyph)
         *glyph = FT_Face_GetCharVariantIndex(face, *glyph, variation);
+    ass_font_unlock(metrics_priv->hash_key.font);
     if (!*glyph)
         return false;
 
@@ -967,11 +967,9 @@ static void shape_fribidi(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
     // update indexes
     for (i = 0; i < len; i++) {
         GlyphInfo *info = glyphs + i;
-        FT_Face face = info->font->faces[info->face_index];
         info->symbol = shaper->event_text[i];
-        info->glyph_index = ass_font_index_magic(face, shaper->event_text[i]);
-        if (info->glyph_index)
-            info->glyph_index = FT_Get_Char_Index(face, info->glyph_index);
+        info->glyph_index = ass_font_get_char_index(info->font, info->face_index,
+                                                    shaper->event_text[i]);
     }
 }
 

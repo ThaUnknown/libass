@@ -1004,6 +1004,40 @@ void ass_shaper_set_whole_text_layout(ASS_Shaper *shaper, bool enable)
 }
 
 /**
+ * \brief Whether FriBidi would leave every level of the paragraph at 0, from
+ * the types alone. Sets dir as FriBidi would.
+ */
+static bool levels_all_ltr(const FriBidiCharType *types, int len, FriBidiParType *dir)
+{
+    if (*dir != FRIBIDI_PAR_LTR && *dir != FRIBIDI_PAR_WLTR && *dir != FRIBIDI_PAR_ON)
+        return false;
+    bool strong = false;
+    for (int i = 0; i < len; i++) {
+        switch (types[i]) {
+        case FRIBIDI_TYPE_LTR:
+            strong = true;
+            break;
+        case FRIBIDI_TYPE_EN:
+        case FRIBIDI_TYPE_ES:
+        case FRIBIDI_TYPE_ET:
+        case FRIBIDI_TYPE_CS:
+        case FRIBIDI_TYPE_NSM:
+        case FRIBIDI_TYPE_BN:
+        case FRIBIDI_TYPE_BS:
+        case FRIBIDI_TYPE_SS:
+        case FRIBIDI_TYPE_WS:
+        case FRIBIDI_TYPE_ON:
+            break;
+        default:
+            return false;
+        }
+    }
+    if (strong)
+        *dir = FRIBIDI_PAR_LTR;
+    return true;
+}
+
+/**
  * \brief Shape an event's text. Calculates directional runs and shapes them.
  * \param text_info event's text
  * \return success, when 0
@@ -1049,6 +1083,11 @@ bool ass_shaper_shape(ASS_Shaper *shaper, TextInfo *text_info)
                 (!shaper->whole_text_layout &&
                     (glyphs[i + 1].starts_new_run || glyphs[i].hspacing))) {
             dir = shaper->base_direction;
+            if (levels_all_ltr(shaper->ctypes + last_break, i - last_break + 1, &dir)) {
+                memset(shaper->emblevels + last_break, 0,
+                       (i - last_break + 1) * sizeof(*shaper->emblevels));
+                ret = 1;
+            } else {
 #ifdef USE_FRIBIDI_EX_API
             FriBidiBracketType *btypes = NULL;
             if (shaper->bidi_brackets)
@@ -1060,6 +1099,7 @@ bool ass_shaper_shape(ASS_Shaper *shaper, TextInfo *text_info)
             ret = fribidi_get_par_embedding_levels(shaper->ctypes + last_break,
                     i - last_break + 1, &dir, shaper->emblevels + last_break);
 #endif
+            }
             if (ret == 0)
                 return false;
             last_break = i + 1;

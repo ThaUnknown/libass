@@ -35,4 +35,9 @@ static inline int ass_isdigit(int c)
     return c >= '0' && c <= '9';
 }
 
+static inline int ass_isxdigit(int c)
+{
+    return ass_isdigit(c) || ((c | 0x20) >= 'a' && (c | 0x20) <= 'f');
+}
+
 #endif

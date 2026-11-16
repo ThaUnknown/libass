@@ -35,6 +35,7 @@
 #endif
 
 #include "ass.h"
+#include "ass_string.h"
 
 #ifndef SIZE_MAX
 #define SIZE_MAX ((size_t)-1)
@@ -266,12 +267,41 @@ static inline int mystrtod(char **p, double *res)
     return *p != start;
 }
 
+// strtoll clamped to int32, for bases 10 and 16
 static inline int mystrtoi32(char **p, int base, int32_t *res)
 {
-    char *start = *p;
-    long long temp_res = strtoll(*p, p, base);
-    *res = FFMINMAX(temp_res, INT32_MIN, INT32_MAX);
-    return *p != start;
+    const char *s = *p;
+    while (ass_isspace(*s))
+        s++;
+    bool negative = *s == '-';
+    if (*s == '-' || *s == '+')
+        s++;
+    if (base == 16 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') && ass_isxdigit(s[2]))
+        s += 2;
+    const char *digits = s;
+    uint64_t value = 0;
+    for (;; s++) {
+        unsigned digit;
+        if (ass_isdigit(*s))
+            digit = *s - '0';
+        else if (base == 16 && ass_isxdigit(*s))
+            digit = (*s | 0x20) - 'a' + 10;
+        else
+            break;
+        // Past int32's range the clamp decides, so stop growing.
+        if (value <= (uint64_t) INT32_MAX + 1)
+            value = value * base + digit;
+    }
+    if (s == digits) {
+        *res = 0;
+        return 0;
+    }
+    *p = (char *) s;
+    if (negative)
+        *res = value > (uint64_t) INT32_MAX ? INT32_MIN : -(int32_t) value;
+    else
+        *res = value > INT32_MAX ? INT32_MAX : (int32_t) value;
+    return 1;
 }
 
 #endif                          /* LIBASS_UTILS_H */

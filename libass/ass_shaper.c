@@ -66,6 +66,7 @@ struct ass_shaper {
     // Glyph and face-size metrics caches, to speed up shaping
     Cache *face_size_metrics_cache;
     Cache *metrics_cache;
+    Cache *shape_cache;
     CacheClient *cache_client;
 
     hb_font_funcs_t *font_funcs;
@@ -522,7 +523,7 @@ bool ass_create_hb_font(ASS_Font *font, int index)
 }
 
 /**
- * \brief Create HarfBuzz sub-font for current face and size.
+ * \brief Get HarfBuzz sub-font for current face and size, kept by the font.
  * \param info glyph cluster
  * \return HarfBuzz font
  */
@@ -671,6 +672,39 @@ hb_shaper_get_run_language(ASS_Shaper *shaper, hb_script_t script)
     return lang;
 }
 
+static void place_shaped_glyph(GlyphInfo *glyphs, unsigned idx, uint32_t glyph_index,
+                               int32_t x_offset, int32_t y_offset,
+                               int32_t x_advance, int32_t y_advance)
+{
+    GlyphInfo *info = glyphs + idx;
+    GlyphInfo *root = info;
+
+    // if we have more than one glyph per cluster, allocate a new one
+    // and attach to the root glyph
+    if (!info->skip) {
+        while (info->next)
+            info = info->next;
+        info->next = malloc(sizeof(GlyphInfo));
+        if (info->next) {
+            memcpy(info->next, info, sizeof(GlyphInfo));
+            info = info->next;
+            info->next = NULL;
+        }
+    }
+
+    // set position and advance
+    info->skip = false;
+    info->glyph_index = glyph_index;
+    info->offset.x    = ass_lrint(x_offset * info->scale_x);
+    info->offset.y    = ass_lrint(-y_offset * info->scale_y);
+    info->advance.x   = ass_lrint(x_advance * info->scale_x);
+    info->advance.y   = ass_lrint(-y_advance * info->scale_y);
+
+    // accumulate advance in the root glyph
+    root->cluster_advance.x += info->advance.x;
+    root->cluster_advance.y += info->advance.y;
+}
+
 /**
  * \brief Feed a run of shaped characters into the GlyphInfo array.
  *
@@ -686,36 +720,100 @@ shape_harfbuzz_process_run(GlyphInfo *glyphs, hb_buffer_t *buf, int offset)
     hb_glyph_info_t *glyph_info = hb_buffer_get_glyph_infos(buf, NULL);
     hb_glyph_position_t *pos    = hb_buffer_get_glyph_positions(buf, NULL);
 
-    for (j = 0; j < num_glyphs; j++) {
-        unsigned idx = glyph_info[j].cluster + offset;
-        GlyphInfo *info = glyphs + idx;
-        GlyphInfo *root = info;
+    for (j = 0; j < num_glyphs; j++)
+        place_shaped_glyph(glyphs, glyph_info[j].cluster + offset, glyph_info[j].codepoint,
+                           pos[j].x_offset, pos[j].y_offset,
+                           pos[j].x_advance, pos[j].y_advance);
+}
 
-        // if we have more than one glyph per cluster, allocate a new one
-        // and attach to the root glyph
-        if (!info->skip) {
-            while (info->next)
-                info = info->next;
-            info->next = malloc(sizeof(GlyphInfo));
-            if (info->next) {
-                memcpy(info->next, info, sizeof(GlyphInfo));
-                info = info->next;
-                info->next = NULL;
-            }
-        }
+typedef struct {
+    ASS_Shaper *shaper;
+    GlyphInfo *info;
+    hb_buffer_t *buf;
+    const FriBidiChar *text;
+    int text_length, item_offset, item_length;
+    hb_segment_properties_t props;
+    const hb_feature_t *features;
+    int n_features;
+} ShapeRun;
 
-        // set position and advance
-        info->skip = false;
-        info->glyph_index = glyph_info[j].codepoint;
-        info->offset.x    = ass_lrint(pos[j].x_offset * info->scale_x);
-        info->offset.y    = ass_lrint(-pos[j].y_offset * info->scale_y);
-        info->advance.x   = ass_lrint(pos[j].x_advance * info->scale_x);
-        info->advance.y   = ass_lrint(-pos[j].y_advance * info->scale_y);
+static bool shape_run(const ShapeRun *run)
+{
+    hb_font_t *font = get_hb_font(run->shaper, run->info);
+    if (!font)
+        return false;
+    hb_buffer_pre_allocate(run->buf, run->item_length);
+    hb_buffer_add_utf32(run->buf, run->text, run->text_length,
+            run->item_offset, run->item_length);
+    hb_buffer_set_segment_properties(run->buf, &run->props);
+    hb_shape(font, run->buf, run->features, run->n_features);
+    hb_font_destroy(font);
+    return true;
+}
 
-        // accumulate advance in the root glyph
-        root->cluster_advance.x += info->advance.x;
-        root->cluster_advance.y += info->advance.y;
+size_t ass_shape_construct(void *key, void *value, void *priv)
+{
+    const ShapeRun *run = priv;
+    ShapeHashKey *k = key;
+    ShapeHashValue *v = value;
+    *v = (ShapeHashValue) { .count = -1 };
+    size_t size = sizeof(*k) + k->text.len + sizeof(*v);
+    if (!shape_run(run))
+        return size;
+
+    unsigned count = hb_buffer_get_length(run->buf);
+    hb_glyph_info_t *info = hb_buffer_get_glyph_infos(run->buf, NULL);
+    hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(run->buf, NULL);
+    v->glyphs = count ? malloc(count * sizeof(*v->glyphs)) : NULL;
+    if (!count || v->glyphs) {
+        v->count = count;
+        for (unsigned j = 0; j < count; j++)
+            v->glyphs[j] = (ShapedGlyph) {
+                info[j].cluster, info[j].codepoint,
+                pos[j].x_offset, pos[j].y_offset, pos[j].x_advance, pos[j].y_advance,
+            };
     }
+    hb_buffer_reset(run->buf);
+    return size + count * sizeof(ShapedGlyph);
+}
+
+// What hb_buffer_add_utf32() keeps either side of a run as context
+#define HB_CONTEXT_LENGTH 5
+
+/**
+ * \brief Shape a run through the cache, keyed on everything hb_shape() reads.
+ * \return the shaped run, or NULL to shape it directly
+ */
+static const ShapeHashValue *get_shaped_run(ASS_Shaper *shaper, GlyphInfo *info,
+                                            const ShapeRun *run)
+{
+    unsigned features = 0;
+    for (int i = 0; i < run->n_features; i++) {
+        if (run->features[i].value > 1)
+            return NULL;
+        features |= run->features[i].value << i;
+    }
+    int before = FFMIN(run->item_offset, HB_CONTEXT_LENGTH);
+    int after = FFMIN(run->text_length - run->item_offset - run->item_length,
+                      HB_CONTEXT_LENGTH);
+    ShapeHashKey key = {
+        .font = info->font,
+        .size = info->font_size,
+        .face_index = info->face_index,
+        .direction = run->props.direction,
+        .script = run->props.script,
+        .language = run->props.language,
+        .features = features,
+        .item_offset = run->item_offset,
+        .context_before = before,
+        .context_after = after,
+        .text = {
+            (const char *) (run->text + run->item_offset - before),
+            (before + run->item_length + after) * sizeof(*run->text),
+        },
+    };
+    ShapeHashValue *shaped = ass_cache_get(shaper->shape_cache, shaper->cache_client, &key, (void *) run);
+    return shaped && shaped->count >= 0 ? shaped : NULL;
 }
 
 /**
@@ -740,9 +838,6 @@ static bool shape_harfbuzz(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
         }
 
         int offset = i;
-        hb_font_t *font = get_hb_font(shaper, glyphs + offset);
-        if (!font)
-            return false;
         int run_id = glyphs[offset].shape_run_id;
         int level = shaper->emblevels[offset];
 
@@ -751,12 +846,18 @@ static bool shape_harfbuzz(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
                 level == shaper->emblevels[i + 1])
             i++;
 
-        hb_buffer_pre_allocate(buf, i - offset + 1);
-
+        ShapeRun run = {
+            .shaper = shaper,
+            .info = glyphs + offset,
+            .buf = buf,
+            .features = shaper->features,
+            .n_features = shaper->n_features,
+        };
         int lead_context = 0, trail_context = 0;
         if (shaper->whole_text_layout) {
-            hb_buffer_add_utf32(buf, shaper->event_text, len,
-                    offset, i - offset + 1);
+            run.text = shaper->event_text;
+            run.text_length = len;
+            run.item_offset = offset;
         } else {
             if (offset > 0 && !glyphs[offset].starts_new_run &&
                     is_shaping_control(glyphs[offset - 1].symbol))
@@ -765,26 +866,33 @@ static bool shape_harfbuzz(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
                     is_shaping_control(glyphs[i + 1].symbol))
                 trail_context = 1;
 
-            hb_buffer_add_utf32(buf,
-                    shaper->event_text + offset - lead_context,
-                    i - offset + 1 + lead_context + trail_context,
-                    lead_context, i - offset + 1);
+            run.text = shaper->event_text + offset - lead_context;
+            run.text_length = i - offset + 1 + lead_context + trail_context;
+            run.item_offset = lead_context;
         }
+        run.item_length = i - offset + 1;
 
         props.direction = FRIBIDI_LEVEL_IS_RTL(level) ?
             HB_DIRECTION_RTL : HB_DIRECTION_LTR;
         props.script = glyphs[offset].script;
         props.language  = hb_shaper_get_run_language(shaper, props.script);
-        hb_buffer_set_segment_properties(buf, &props);
+        run.props = props;
 
         set_run_features(shaper, glyphs + offset);
-        hb_shape(font, buf, shaper->features, shaper->n_features);
-
-        shape_harfbuzz_process_run(glyphs, buf,
-                shaper->whole_text_layout ? 0 : offset - lead_context);
-        hb_buffer_reset(buf);
-
-        hb_font_destroy(font);
+        int placement = shaper->whole_text_layout ? 0 : offset - lead_context;
+        const ShapeHashValue *shaped = get_shaped_run(shaper, glyphs + offset, &run);
+        if (shaped) {
+            for (int j = 0; j < shaped->count; j++) {
+                const ShapedGlyph *g = shaped->glyphs + j;
+                place_shaped_glyph(glyphs, g->cluster + placement, g->glyph,
+                                   g->x_offset, g->y_offset, g->x_advance, g->y_advance);
+            }
+        } else {
+            if (!shape_run(&run))
+                return false;
+            shape_harfbuzz_process_run(glyphs, buf, placement);
+            hb_buffer_reset(buf);
+        }
     }
 
     return true;
@@ -1121,7 +1229,8 @@ bool ass_shaper_shape(ASS_Shaper *shaper, TextInfo *text_info)
 /**
  * \brief Create a new shaper instance
  */
-ASS_Shaper *ass_shaper_new(Cache *metrics_cache, Cache *face_size_metrics_cache, CacheClient *cache_client)
+ASS_Shaper *ass_shaper_new(Cache *metrics_cache, Cache *face_size_metrics_cache,
+                           Cache *shape_cache, CacheClient *cache_client)
 {
     assert(metrics_cache);
 
@@ -1135,6 +1244,7 @@ ASS_Shaper *ass_shaper_new(Cache *metrics_cache, Cache *face_size_metrics_cache,
         goto error;
     shaper->face_size_metrics_cache = face_size_metrics_cache;
     shaper->metrics_cache = metrics_cache;
+    shaper->shape_cache = shape_cache;
     shaper->cache_client = cache_client;
 
     hb_font_funcs_t *funcs = shaper->font_funcs = hb_font_funcs_create();

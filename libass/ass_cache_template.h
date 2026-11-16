@@ -83,6 +83,25 @@ START(glyph_metrics, glyph_metrics_hash_key)
     GENERIC(int, glyph_index)
 END(GlyphMetricsHashKey)
 
+// describes a run of text as HarfBuzz shapes it
+// font is refed when inserted and unrefed when dropped;
+// on call to ass_cache_get(), text is a non-owning view of the codepoints
+// HarfBuzz reads: context before, the run, context after;
+// its content is duplicated when inserted; the copy is freed when dropped
+START(shape, shape_hash_key)
+    GENERIC(ASS_Font *, font)
+    GENERIC(double, size)
+    GENERIC(int, face_index)
+    GENERIC(int, direction)
+    GENERIC(unsigned, script)
+    GENERIC(const void *, language)
+    GENERIC(unsigned, features)  // bit i set when the shaper's feature i is on
+    GENERIC(int, item_offset)    // the run's offset in the text given to HarfBuzz
+    GENERIC(int, context_before)
+    GENERIC(int, context_after)
+    STRING(text)
+END(ShapeHashKey)
+
 // describes an outline glyph
 // font is refed when inserted and unrefed when dropped
 START(glyph, glyph_hash_key)

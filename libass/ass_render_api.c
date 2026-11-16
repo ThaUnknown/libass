@@ -176,6 +176,7 @@ void ass_set_fonts(ASS_Renderer *priv, const char *default_font,
 
     ass_cache_empty(priv->cache.font_cache);
     ass_cache_empty(priv->cache.metrics_cache);
+    ass_cache_empty(priv->cache.shape_cache);
 
     if (priv->fontselect)
         ass_fontselect_free(priv->fontselect);

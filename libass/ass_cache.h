@@ -38,6 +38,16 @@ typedef struct {
 } CompositeHashValue;
 
 typedef struct {
+    uint32_t cluster, glyph;
+    int32_t x_offset, y_offset, x_advance, y_advance;
+} ShapedGlyph;
+
+typedef struct {
+    int count;  // -1 when the result could not be stored
+    ShapedGlyph *glyphs;
+} ShapeHashValue;
+
+typedef struct {
     bool valid;
     ASS_Outline outline[2];
     ASS_Rect cbox;  // bounding box of all control points
@@ -129,6 +139,7 @@ Cache *ass_font_cache_create(void);
 Cache *ass_outline_cache_create(void);
 Cache *ass_face_size_metrics_cache_create(void);
 Cache *ass_glyph_metrics_cache_create(void);
+Cache *ass_shape_cache_create(void);
 Cache *ass_bitmap_cache_create(void);
 Cache *ass_composite_cache_create(void);
 
